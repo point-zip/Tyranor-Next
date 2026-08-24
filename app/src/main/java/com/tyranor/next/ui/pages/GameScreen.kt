@@ -90,6 +90,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 
+/** 会话内是否已触发过自动重扫（每个进程只自动扫一次，避免频繁切页反复全量扫描）。 */
+private var autoRescanAttempted = false
+
 @Composable
 fun GameScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -177,6 +180,15 @@ fun GameScreen(modifier: Modifier = Modifier) {
             }
             // 保存根目录后立即全量扫描
             EngineScanner.saveRoot(context, u)
+            scanLibrary()
+        }
+    }
+
+    // 会话内首次进入游戏页时自动全量重扫：目录改名/删除后的旧条目
+    // 无需手动点「扫描游戏」即被清理；无扫描目录时跳过。
+    LaunchedEffect(Unit) {
+        if (!autoRescanAttempted && EngineScanner.loadRoots(context).isNotEmpty()) {
+            autoRescanAttempted = true
             scanLibrary()
         }
     }

@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tyranor.next.R
+import com.tyranor.next.scanner.EngineLauncher
 import com.tyranor.next.scanner.EngineScanner
 import com.tyranor.next.scanner.ScanGame
 import com.tyranor.next.theme.NavWhite
@@ -61,6 +62,8 @@ fun HomeScreen(modifier: Modifier = Modifier) {
     var recentGames by remember { mutableStateOf(EngineScanner.loadRecentGames(context).take(10)) }
     var selectedGame by remember { mutableStateOf<ScanGame?>(null) }
     var removeRecentTarget by remember { mutableStateOf<ScanGame?>(null) }
+    var launchError by remember { mutableStateOf<String?>(null) }
+    var patchLaunchTarget by remember { mutableStateOf<ScanGame?>(null) }
 
     fun replaceGame(updated: ScanGame) {
         quickLaunch = quickLaunch.map { if (it.uri == updated.uri) updated else it }
@@ -96,6 +99,15 @@ fun HomeScreen(modifier: Modifier = Modifier) {
         EngineScanner.removeRecentGame(context, target.uri)
     }
 
+    // 点按直接启动游戏；Artemis 按既有策略弹出补丁确认（与游戏页长按启动一致）。
+    fun launchGame(game: ScanGame) {
+        if (EngineLauncher.needsArtemisPatchConfirm(context, game)) {
+            patchLaunchTarget = game
+        } else {
+            launchError = EngineLauncher.launch(context, game)
+        }
+    }
+
     Column(modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
             Column(modifier = Modifier.fillMaxWidth().statusBarsPadding()) {
@@ -123,7 +135,8 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                     val game = quickLaunch.getOrNull(i)
                     QuickLaunchSlot(
                         game = game,
-                        onClick = { if (game != null) selectedGame = game },
+                        onClick = { if (game != null) launchGame(game) },
+                        onLongClick = { if (game != null) selectedGame = game },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -148,7 +161,7 @@ fun HomeScreen(modifier: Modifier = Modifier) {
                 items(recentGames, key = { it.uri }) { game ->
                     RecentGameRow(
                         game = game,
-                        onClick = { selectedGame = game },
+                        onClick = { launchGame(game) },
                         onLongClick = { removeRecentTarget = game },
                     )
                 }
@@ -156,7 +169,7 @@ fun HomeScreen(modifier: Modifier = Modifier) {
         }
     }
 
-    // ===== 点击最近打开项的底部抽屉栏（与游戏页一致，不直接启动游戏） =====
+    // ===== 点按直接启动游戏；长按快捷启动槽位可打开操作菜单 =====
     selectedGame?.let { game ->
         GameActionsSheet(
             game = game,
@@ -166,6 +179,61 @@ fun HomeScreen(modifier: Modifier = Modifier) {
             onEngineSettings = {
                 startActivityWithPageTransition(context, PerGameSettingsActivity.createIntent(context, game))
                 selectedGame = null
+            },
+        )
+    }
+
+    // ===== Artemis 首次启动补丁确认（与游戏页一致） =====
+    patchLaunchTarget?.let { game ->
+        AppAlertDialog(
+            onDismissRequest = { patchLaunchTarget = null },
+            title = {
+                Text(
+                    "应用自动补丁",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            },
+            text = {
+                Text(
+                    "「${game.title}」的启动文件打包在 .pfs 归档内，首次启动需要解出少量基础文件" +
+                        "（system.ini、窗口配置与视频）并适配 Android 平台。是否应用补丁？",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        patchLaunchTarget = null
+                        launchError = EngineLauncher.launch(context, game, EngineLauncher.ArtemisPatchChoice.ALWAYS)
+                    },
+                ) { Text("总是") }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = {
+                            patchLaunchTarget = null
+                            launchError = EngineLauncher.launch(context, game, EngineLauncher.ArtemisPatchChoice.NEVER)
+                        },
+                    ) { Text("不再") }
+                    TextButton(
+                        onClick = {
+                            patchLaunchTarget = null
+                            launchError = EngineLauncher.launch(context, game, EngineLauncher.ArtemisPatchChoice.ONCE)
+                        },
+                    ) { Text("本次") }
+                }
+            },
+        )
+    }
+
+    launchError?.let { message ->
+        AppAlertDialog(
+            onDismissRequest = { launchError = null },
+            title = { Text("启动失败", style = MaterialTheme.typography.titleMedium) },
+            text = { Text(message, style = MaterialTheme.typography.bodyMedium) },
+            confirmButton = {
+                TextButton(onClick = { launchError = null }) { Text("确定") }
             },
         )
     }
@@ -196,15 +264,16 @@ fun HomeScreen(modifier: Modifier = Modifier) {
     }
 }
 
-/** 首页快捷启动槽位：已设置复用游戏页卡片样式（封面跟随游戏页），空槽显示白色封面 + 加号。 */
+/** 首页快捷启动槽位：已设置复用游戏页卡片样式（封面跟随游戏页），点按直启、长按开菜单；空槽显示白色封面 + 加号。 */
 @Composable
 private fun QuickLaunchSlot(
     game: ScanGame?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
 ) {
     if (game != null) {
-        GameCard(game = game, onClick = onClick, modifier = modifier)
+        GameCard(game = game, onClick = onClick, modifier = modifier, onLongClick = onLongClick)
     } else {
         Column(modifier) {
             Box(
@@ -234,7 +303,7 @@ private fun QuickLaunchSlot(
     }
 }
 
-/** 最近打开列表项：圆角长矩形，左侧统一图标 + 游戏名，右侧打开时间；长按删除该条记录。 */
+/** 最近打开列表项：圆角长矩形，左侧统一图标 + 游戏名，右侧打开时间；点按直启，长按删除该条记录。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RecentGameRow(game: ScanGame, onClick: () -> Unit, onLongClick: () -> Unit) {
