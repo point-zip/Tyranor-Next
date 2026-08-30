@@ -26,6 +26,32 @@
         }
     } catch (e) {}
 
+    // Scene_Boot 卡 Scene_Boot 60s 黑屏的根因：corescript 的 isFontLoaded 走
+    // CSS Font Loading API（依赖 document.fonts.ready resolve），部分 MIUI
+    // WebView 上该 Promise 长期不 resolve → 永远 false → 60s 超时。
+    // 旧核心用 measureText 测宽对比（v0 同设备可正常显示），此处对齐 v0 行为
+    (function () {
+        var fontTimer = setInterval(function () {
+            try {
+                if (window.Graphics && typeof window.Graphics.isFontLoaded === "function" && !window.Graphics.isFontLoaded.__tyranorV1Patched) {
+                    window.Graphics.isFontLoaded = function (name) {
+                        if (!this._hiddenCanvas) this._hiddenCanvas = document.createElement('canvas');
+                        var context = this._hiddenCanvas.getContext('2d');
+                        var text = 'abcdefghijklmnopqrstuvwxyz';
+                        context.font = '40px ' + name + ', sans-serif';
+                        var width1 = context.measureText(text).width;
+                        context.font = '40px sans-serif';
+                        var width2 = context.measureText(text).width;
+                        return width1 !== width2;
+                    };
+                    window.Graphics.isFontLoaded.__tyranorV1Patched = true;
+                    clearInterval(fontTimer);
+                }
+            } catch (e) {}
+        }, 200);
+        setTimeout(function () { try { clearInterval(fontTimer); } catch (e) {} }, 8000);
+    })();
+
     // 缺资源时不弹错误框但必须保留 _loadingCount = -Infinity 的释放语义：
     // 原版靠它解锁场景继续（isLoading 为 false）；只抑制视觉不释放会让
     // 游戏永远等待缺失资源 → 整屏黑（实测）
