@@ -95,8 +95,26 @@
                     return;
                 }
                 clearInterval(forceTimer);
-                console.warn("[nw-polyfill-v1] boot stalled " + (Date.now() - firstReady) + "ms with frames=" + frames + ", forcing goto(Scene_Title)");
+                console.warn("[nw-polyfill-v1] boot stalled " + (Date.now() - firstReady) + "ms with frames=" + frames + ", forcing boot completion");
+                // 补全 Scene_Boot.start 的必要步骤（强推跳过了它们会导致
+                // $gameSystem 为 null → Scene_Title 建窗口时 windowTone 崩溃）
+                try {
+                    if (typeof DataManager.setupNewGame === "function") {
+                        DataManager.setupNewGame();
+                    }
+                    if (window.Window_TitleCommand && typeof Window_TitleCommand.initCommandPosition === "function") {
+                        Window_TitleCommand.initCommandPosition();
+                    }
+                    if (typeof SoundManager !== "undefined" && typeof SoundManager.preloadImportantSounds === "function") {
+                        SoundManager.preloadImportantSounds();
+                    }
+                } catch (e2) {
+                    console.warn("[nw-polyfill-v1] boot start steps error:", e2 && e2.message);
+                }
+                // 解除循环停止状态并重启 rAF（插件包装链在 corescript 下会把循环弄停）
+                window.SceneManager._stopped = false;
                 window.SceneManager.goto(window.Scene_Title);
+                window.SceneManager.requestUpdate();
             } catch (e) {}
         }, 1000);
         window.addEventListener("pagehide", function () { try { clearInterval(forceTimer); } catch (e) {} });
