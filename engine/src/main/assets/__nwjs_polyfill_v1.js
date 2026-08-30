@@ -5,20 +5,11 @@
     if (window.__tyranorNwPolyfillV1) return;
     window.__tyranorNwPolyfillV1 = true;
 
-    // KELYEP_DragonBones / FilterController: Object.create(undefined) 在 1.6.1 核心下抛
-    // "Object prototype may only be an Object or null"。仅拦 undefined，
-    // Object.create(null) 的合法无原型字典放行
-    var origCreate = Object.create;
-    if (!origCreate.__tyranorV1Patched) {
-        Object.create = function (proto, props) {
-            if (proto === undefined) {
-                console.warn("[nw-polyfill-v1] Object.create(undefined) suppressed, fallback to {}");
-                return props ? origCreate.call(this, {}, props) : {};
-            }
-            return origCreate.call(this, proto, props);
-        };
-        Object.create.__tyranorV1Patched = true;
-    }
+    // 注意：不拦截 Object.create(undefined)。
+    // KELYEP_DragonBones / FilterController 在 v0 下同样于此处抛错并中止脚本，
+    // v0 能正常显示证明"报错中止"是保护行为——插件半初始化代码不应继续执行；
+    // 若用 {} 兜底放行，半初始化的渲染钩子会导致整屏黑（实测）。
+    // v1 保持与 v0 相同的报错中止语义即可。
 
     // rpg_core.js:3281 exitFullscreen 在文档未激活时抛 "Document not active"
     try {
@@ -35,14 +26,16 @@
         }
     } catch (e) {}
 
-    // 单张贴图 404 不卡死场景：printLoadingError 降级为警告，
-    // 不再置 _loadingCount = -Infinity（服务器端 .png->.rpgmvp 回退已在 Kotlin 侧）
+    // 缺资源时不弹错误框但必须保留 _loadingCount = -Infinity 的释放语义：
+    // 原版靠它解锁场景继续（isLoading 为 false）；只抑制视觉不释放会让
+    // 游戏永远等待缺失资源 → 整屏黑（实测）
     (function () {
         var pleTimer = setInterval(function () {
             try {
                 if (window.Graphics && typeof window.Graphics.printLoadingError === "function" && !window.Graphics.printLoadingError.__tyranorV1Patched) {
                     window.Graphics.printLoadingError = function (url) {
                         console.warn("[nw-polyfill-v1] printLoadingError suppressed for", url);
+                        window.Graphics._loadingCount = -Infinity;
                     };
                     window.Graphics.printLoadingError.__tyranorV1Patched = true;
                     clearInterval(pleTimer);
@@ -52,5 +45,5 @@
         setTimeout(function () { try { clearInterval(pleTimer); } catch (e) {} }, 8000);
     })();
 
-    console.log("[nw-polyfill-v1] installed (Object.create/exitFullscreen/printLoadingError)");
+    console.log("[nw-polyfill-v1] installed (exitFullscreen/printLoadingError)");
 })();

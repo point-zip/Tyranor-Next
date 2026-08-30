@@ -365,6 +365,21 @@ class TyranoActivity : Activity() {
                 if (virtualMouseLayer != null && view != null) {
                     runCatching { view.evaluateJavascript(mouseJs, null) }
                 }
+                // MV/MZ 渲染诊断：页面加载后采样 canvas 尺寸/缩放/渲染器/场景/GL 中心像素，
+                // 用于定位"引擎全绿但整屏黑"的合成层问题（延时两次观察启动进度）
+                if ((webGameType == WebGameType.RPG_MV || webGameType == WebGameType.RPG_MZ) && view != null) {
+                    listOf(3000L, 10000L).forEach { delay ->
+                        view.postDelayed({
+                            if (webView != null) {
+                                runCatching {
+                                    view.evaluateJavascript(RENDER_DIAGNOSTIC_JS) { result ->
+                                        Log.i(TAG, "renderDiag build=$BUILD_TAG delay=$delay layerType=${view.layerType} result=$result")
+                                    }
+                                }
+                            }
+                        }, delay)
+                    }
+                }
             }
 
             override fun onReceivedError(
@@ -1015,6 +1030,40 @@ class TyranoActivity : Activity() {
         private const val EXTRA_RPG_MAKER_MOD_GAME_ID = "rpgMakerModGameId"
         private const val EXTRA_RPG_MAKER_VERSION = "rpgMakerVersion"
         private const val EXTRA_RPG_LEGACY_RENDERER = "rpgLegacyRenderer"
+
+        /** MV/MZ 渲染诊断脚本：canvas 尺寸/缩放/渲染器/当前场景/GL 中心像素采样 */
+        private val RENDER_DIAGNOSTIC_JS = """
+            (function(){
+              try {
+                var c = window.Graphics && Graphics._canvas;
+                var r = {
+                  hasGraphics: !!window.Graphics,
+                  canvas: c ? [c.width, c.height] : null,
+                  style: c ? [c.style.width, c.style.height, c.style.position, c.style.zIndex] : null,
+                  realScale: window.Graphics ? Graphics._realScale : null,
+                  rendererType: (window.Graphics && Graphics._renderer) ? Graphics._renderer.type : null,
+                  scene: (window.SceneManager && SceneManager._scene) ? SceneManager._scene.constructor.name : null,
+                  sceneStarted: (window.SceneManager && SceneManager._scene) ? !!SceneManager._scene.sceneStarted : null,
+                  inner: [window.innerWidth, window.innerHeight],
+                  dpr: window.devicePixelRatio,
+                  bodyChildren: document.body ? document.body.children.length : -1,
+                  glErr: null,
+                  centerPixel: null
+                };
+                try {
+                  var gl = window.Graphics && Graphics._renderer && Graphics._renderer.gl;
+                  if (gl) {
+                    r.glErr = gl.getError();
+                    var px = new Uint8Array(4);
+                    gl.readPixels((gl.drawingBufferWidth/2)|0, (gl.drawingBufferHeight/2)|0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+                    r.centerPixel = Array.prototype.slice.call(px);
+                  } else { r.glErr = 'no-gl'; }
+                } catch(e2) { r.glErr = 'exc:' + e2.message; }
+                return JSON.stringify(r);
+              } catch(e) { return 'diag-crashed: ' + e.message; }
+            })();
+        """.trimIndent()
+
         private const val RPG_MAKER_MOD_PREFS = "tyranor_rpgmaker_mod_state"
         private const val PER_GAME_TOUCH_PAD_KEY = "touch_pad_config"
         private const val PER_GAME_TOUCH_PAD_PRESETS_KEY = "touch_pad_presets"
