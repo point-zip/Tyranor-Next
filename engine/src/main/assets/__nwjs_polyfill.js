@@ -1,5 +1,6 @@
 // NW.js / Node 兼容层 — 让 MV/MZ 在 WebView 下完整模拟环境
 // v0/v1 均在 earlyHook 阶段注入到 </head> 前
+// Phase: JoiPlay port — fs/path/Buffer/process/nw 均转发 NWJSApi 真实现
 (function () {
     "use strict";
     if (window.__tyranorNwPolyfill) return;
@@ -7,6 +8,8 @@
 
     try { window.global = window; window.global.global = window; } catch (e) {}
     try { if (typeof globalThis !== "undefined") globalThis.global = window; } catch (e) {}
+
+    function hasBridge() { try { return typeof NWJSApi !== "undefined" && !!NWJSApi; } catch (e) { return false; } }
 
     function pinIsNwjs() {
         try {
@@ -27,21 +30,57 @@
     window.addEventListener("load", function(){ pinIsNwjs(); setTimeout(function(){ try{ clearInterval(pinTimer);}catch(e){}}, 3000); });
     window.addEventListener("pagehide", function () { try { clearInterval(pinTimer); } catch (e) {} });
 
+    // ── Storage 劫持（JoiPlay 核心：localStorage 直写游戏 save 目录） ──────────
+    (function () {
+        try {
+            if (!hasBridge() || !NWJSApi.saveFile) return;
+            var _setItem = Storage.prototype.setItem;
+            Storage.prototype.setItem = function (key, value) {
+                try { NWJSApi.saveFile(String(key), String(value)); } catch (e) { try { _setItem.call(this, key, value); } catch (e2) {} }
+            };
+            var _getItem = Storage.prototype.getItem;
+            Storage.prototype.getItem = function (key) {
+                try {
+                    var v = NWJSApi.getFile(String(key));
+                    if (v !== "" && v !== "\b\b\b") return v;
+                    return _getItem.call(this, key);
+                } catch (e) { try { return _getItem.call(this, key); } catch (e2) { return null; } }
+            };
+            var _removeItem = Storage.prototype.removeItem;
+            Storage.prototype.removeItem = function (key) {
+                try { NWJSApi.removeFile(String(key)); } catch (e) {}
+                try { _removeItem.call(this, key); } catch (e2) {}
+            };
+        } catch (e) {}
+    })();
+
+    // ── process ──────────────────────────────────────────────────────────
     if (typeof window.process === "undefined") window.process = {};
     var proc = window.process;
     try {
-        if (!proc.mainModule) proc.mainModule = { filename: "/game/www/index.html", loaded: true };
-        if (!proc.platform) proc.platform = "linux";
+        var _execDir = "";
+        try { if (hasBridge() && NWJSApi.execDir) _execDir = NWJSApi.execDir(); } catch (e) {}
+        if (!_execDir) _execDir = "/game";
+        if (!proc.mainModule) proc.mainModule = { filename: _execDir + "/index.html", loaded: true };
+        if (!proc.platform) proc.platform = "win32";
         if (!proc.arch) proc.arch = "x64";
         if (!proc.versions) proc.versions = {};
-        if (!proc.versions.nw) proc.versions.nw = "0.0.0";
-        if (!proc.versions.node) proc.versions.node = "0.0.0";
+        if (!proc.versions.nw) proc.versions.nw = "0.32.0";
+        if (!proc.versions["nw-flavor"]) proc.versions["nw-flavor"] = "normal";
+        if (!proc.versions.chromium) proc.versions.chromium = "80.0.3987.87";
+        if (!proc.versions.node) proc.versions.node = "14.7.0";
         if (!proc.env) proc.env = {};
-        if (!proc.argv) proc.argv = [];
-        if (!proc.execPath) proc.execPath = "/game/nw";
+        if (!proc.env.USER) proc.env.USER = "joiplay";
+        if (!proc.env.PWD) proc.env.PWD = _execDir;
+        if (!proc.env.HOME) proc.env.HOME = _execDir;
+        if (!proc.env.HOMEPATH) proc.env.HOMEPATH = _execDir;
+        if (!proc.env.LOGNAME) proc.env.LOGNAME = "joiplay";
+        if (!proc.env.NODE_ENV) proc.env.NODE_ENV = "production";
+        if (!proc.argv) proc.argv = [_execDir, ""];
+        if (!proc.execPath) proc.execPath = _execDir;
         if (!proc.title) proc.title = "browser";
         proc.browser = true;
-        if (typeof proc.cwd !== "function") proc.cwd = function () { return "/"; };
+        if (typeof proc.cwd !== "function") proc.cwd = function () { try { return hasBridge() ? NWJSApi.execDir() : "/"; } catch (e) { return "/"; } };
         if (typeof proc.chdir !== "function") proc.chdir = function () { throw new Error("process.chdir is not supported"); };
         if (typeof proc.nextTick !== "function") proc.nextTick = function (fn) { setTimeout(fn, 0); };
         var noop = function () {};
@@ -54,13 +93,14 @@
         if (typeof proc.uptime !== "function") proc.uptime = function () { return 0; };
     } catch (e) {}
     try { if (typeof globalThis !== "undefined" && !globalThis.process) globalThis.process = proc; } catch (e) {}
-    try { if (typeof window.__dirname === "undefined") window.__dirname = "/"; } catch (e) {}
-    try { if (typeof window.__filename === "undefined") window.__filename = "/game/www/index.html"; } catch (e) {}
+    try { if (typeof window.__dirname === "undefined") window.__dirname = (function(){ try{return hasBridge()?NWJSApi.execDir():"/";}catch(e){return "/";}})(); } catch (e) {}
+    try { if (typeof window.__filename === "undefined") window.__filename = (function(){ try{return hasBridge()?NWJSApi.execDir()+"/index.html":"/game/www/index.html";}catch(e){return "/game/www/index.html";}})(); } catch (e) {}
 
+    // ── Buffer（JoiPlay 用 buffer@5 真实现；此处内联精简版 + 桥协议对齐） ──
     if (typeof window.Buffer === "undefined") {
         (function () {
             function _toBinary(str) {
-                try { return atob(str); } catch (e) { console.warn("[nw-polyfill] Buffer.from base64 decode failed"); return ""; }
+                try { return atob(str); } catch (e) { return ""; }
             }
             function _fromBinary(bin, enc) {
                 if (enc === "utf8" || enc === "utf-8") {
@@ -72,6 +112,7 @@
                 if (enc === "hex") {
                     var h = ""; for (var i = 0; i < bin.length; i++) { var c = bin.charCodeAt(i).toString(16); h += c.length === 1 ? "0" + c : c; } return h;
                 }
+                if (enc === "base64") try { return btoa(unescape(encodeURIComponent(bin))); } catch (e) { try { return btoa(bin); } catch (e2) { return ""; } }
                 return bin;
             }
             var B = {
@@ -79,11 +120,16 @@
                     if (typeof input === "string") {
                         if (encoding === "base64") {
                             var bin = _toBinary(input);
-                            return { toString: function (enc) { return _fromBinary(bin, enc); }, length: bin.length, _bin: bin };
+                            return {
+                                toString: function (enc) { return _fromBinary(bin, enc); },
+                                length: bin.length, _bin: bin,
+                                toJSON: function(){ var a=[]; for(var i=0;i<bin.length;i++) a.push(bin.charCodeAt(i)); return {type:"Buffer",data:a}; }
+                            };
                         }
                         if (encoding === "hex") {
                             var bin2 = ""; for (var i = 0; i < input.length; i += 2) bin2 += String.fromCharCode(parseInt(input.substr(i, 2), 16));
-                            return { toString: function (enc) { return _fromBinary(bin2, enc); }, length: bin2.length, _bin: bin2 };
+                            return { toString: function (enc) { return _fromBinary(bin2, enc); }, length: bin2.length, _bin: bin2,
+                                toJSON: function(){ var a=[]; for(var i=0;i<bin2.length;i++) a.push(bin2.charCodeAt(i)); return {type:"Buffer",data:a}; } };
                         }
                         return {
                             toString: function (enc) {
@@ -91,14 +137,22 @@
                                 if (enc === "base64") try { return btoa(unescape(encodeURIComponent(input))); } catch (e) { return ""; }
                                 return input;
                             },
-                            length: input.length, _bin: input
+                            length: input.length, _bin: input,
+                            toJSON: function(){ var a=[]; for(var i=0;i<input.length;i++) a.push(input.charCodeAt(i)); return {type:"Buffer",data:a}; }
                         };
                     }
                     if (input && typeof input.length === "number") {
                         var s = ""; for (var i = 0; i < input.length; i++) s += String.fromCharCode(input[i]);
-                        return { toString: function (enc) { return _fromBinary(s, enc); }, length: s.length, _bin: s };
+                        return { toString: function (enc) { return _fromBinary(s, enc); }, length: s.length, _bin: s,
+                            toJSON: function(){ var a=[]; for(var i=0;i<s.length;i++) a.push(s.charCodeAt(i)); return {type:"Buffer",data:a}; } };
                     }
-                    return { toString: function () { return String(input); }, length: 0, _bin: "" };
+                    if (input && input.type === "Buffer" && input.data) {
+                        var s2 = ""; for (var j = 0; j < input.data.length; j++) s2 += String.fromCharCode(input.data[j]);
+                        return { toString: function (enc) { return _fromBinary(s2, enc); }, length: s2.length, _bin: s2,
+                            toJSON: function(){ return {type:"Buffer",data:input.data.slice()}; } };
+                    }
+                    return { toString: function () { return String(input); }, length: 0, _bin: "",
+                        toJSON: function(){ return {type:"Buffer",data:[]}; } };
                 },
                 alloc: function (size, fill, enc) {
                     var s = ""; var ch = fill ? String(fill)[0] : "\0";
@@ -107,7 +161,7 @@
                 },
                 allocUnsafe: function (size) { return B.alloc(size); },
                 allocUnsafeSlow: function (size) { return B.alloc(size); },
-                isBuffer: function () { return false; },
+                isBuffer: function (o) { return !!(o && o._bin !== undefined); },
                 isEncoding: function (e) { return ["utf8", "utf-8", "base64", "hex", "ascii", "binary", "latin1"].indexOf(e) >= 0; },
                 byteLength: function (str, enc) {
                     if (enc === "base64") try { return atob(str).length; } catch (e) { return 0; }
@@ -123,71 +177,157 @@
         })();
     }
 
-    var warnedFsWrite = false;
-    function warnFsOnce(msg) {
-        if (warnedFsWrite) return;
-        warnedFsWrite = true;
-        console.warn("[nw-polyfill] fs stub: " + msg + " (no-op, game may silently lose file-backed feature)");
-    }
-    var fsStub = {
-        existsSync: function () { return false; },
-        exists: function (p, cb) { if (typeof cb === "function") setTimeout(function () { cb(false); }, 0); },
-        mkdirSync: function () { warnFsOnce("mkdirSync ignored"); },
-        mkdir: function (p, o, cb) { if (typeof o === "function") cb = o; if (typeof cb === "function") setTimeout(function () { cb(null); }, 0); },
-        writeFileSync: function () { warnFsOnce("writeFileSync ignored"); },
-        writeFile: function (p, d, o, cb) { if (typeof o === "function") cb = o; if (typeof cb === "function") setTimeout(function () { cb(null); }, 0); },
-        appendFileSync: function () { warnFsOnce("appendFileSync ignored"); },
-        appendFile: function (p, d, o, cb) { if (typeof o === "function") cb = o; if (typeof cb === "function") setTimeout(function () { cb(null); }, 0); },
-        readFileSync: function () { warnFsOnce("readFileSync returns empty"); return ""; },
-        readFile: function (p, o, cb) { if (typeof o === "function") cb = o; if (typeof cb === "function") setTimeout(function () { cb(null, ""); }, 0); return ""; },
-        unlinkSync: function () {},
-        unlink: function (p, cb) { if (typeof cb === "function") setTimeout(function () { cb(null); }, 0); },
-        openSync: function () { return 0; },
-        open: function (p, f, m, cb) { if (typeof m === "function") cb = m; if (typeof cb === "function") setTimeout(function () { cb(null, 0); }, 0); },
-        closeSync: function () {},
-        close: function (fd, cb) { if (typeof cb === "function") setTimeout(function () { cb(null); }, 0); },
-        readSync: function () { return 0; },
-        writeSync: function () { return 0; },
-        readdirSync: function () { return []; },
-        readdir: function (p, o, cb) { if (typeof o === "function") cb = o; if (typeof cb === "function") setTimeout(function () { cb(null, []); }, 0); },
-        statSync: function () { return { isFile: function () { return false; }, isDirectory: function () { return false; }, isSymbolicLink: function () { return false; }, size: 0, mtime: new Date(0) }; },
-        lstatSync: function () { return { isFile: function () { return false; }, isDirectory: function () { return false; }, isSymbolicLink: function () { return false; }, size: 0, mtime: new Date(0) }; },
-        fstatSync: function () { return { isFile: function () { return false; }, isDirectory: function () { return false; }, size: 0 }; },
-        createReadStream: function () { return { on: function () { return this; }, once: function () { return this; }, pipe: function () { return this; }, read: function () {}, close: function () {} }; },
-        createWriteStream: function () { return { on: function () { return this; }, once: function () { return this; }, write: function () {}, end: function () {}, close: function () {} }; },
-        watch: function () { return { close: function () {}, on: function () { return this; } }; },
-        watchFile: function () {}, unwatchFile: function () {},
-        renameSync: function () {}, rename: function (p, q, cb) { if (typeof cb === "function") setTimeout(function () { cb(null); }, 0); },
-        copyFileSync: function () {}, copyFile: function (p, q, cb) { if (typeof cb === "function") setTimeout(function () { cb(null); }, 0); },
-        chmodSync: function () {}, chownSync: function () {},
-        promises: {
-            readFile: function () { return Promise.resolve(""); },
-            writeFile: function () { return Promise.resolve(); },
-            mkdir: function () { return Promise.resolve(); },
-            readdir: function () { return Promise.resolve([]); },
-            stat: function () { return Promise.resolve({ isFile: function () { return false; }, isDirectory: function () { return false; } }); },
-            unlink: function () { return Promise.resolve(); }
-        }
-    };
+    // ── fs（JoiPlay 语义：同步桥 + 失败哨兵 "\b\b\b"） ───────────────────
+    var fsStub = (function () {
+        function hasFsBridge() { return hasBridge() && typeof NWJSApi.readFileSync === "function"; }
 
-    var pathStub = {
-        dirname: function (p) { if (!p) return "."; var i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")); return i >= 0 ? (p.slice(0, i) || "/") : "."; },
-        basename: function (p, ext) { if (!p) return ""; var s = p.split("/").pop().split("\\").pop(); if (ext && s.endsWith(ext)) s = s.slice(0, -ext.length); return s; },
-        extname: function (p) { var b = p.split("/").pop().split("\\").pop(); var d = b.lastIndexOf("."); return d >= 0 ? b.slice(d) : ""; },
-        join: function () { var a = Array.prototype.slice.call(arguments).filter(Boolean); return a.join("/").replace(/\/+/g, "/"); },
-        resolve: function () { var a = Array.prototype.slice.call(arguments).filter(Boolean); var s = a.join("/").replace(/\/+/g, "/"); if (s[0] !== "/") s = "/" + s; return s; },
-        normalize: function (p) { return p ? p.replace(/\/+/g, "/").replace(/\/\.\//g, "/") : "."; },
-        relative: function (from, to) { return to; },
-        isAbsolute: function (p) { return p && (p[0] === "/" || /^[a-zA-Z]:[\\/]/.test(p)); },
-        parse: function (p) { var b = pathStub.basename(p); var e = pathStub.extname(p); var d = pathStub.dirname(p); return { root: "/", dir: d, base: b, ext: e, name: b.slice(0, b.length - e.length) }; },
-        format: function (o) { return (o.dir ? o.dir + "/" : "") + (o.name || "") + (o.ext || ""); },
-        sep: "/", delimiter: ":", posix: null, win32: null
-    };
-    pathStub.posix = pathStub; pathStub.win32 = pathStub;
+        function Stats(path) { this.path = path || ""; this.size = 0; this.mtime = new Date(0); }
+        Stats.prototype.isFile = function () { try { return hasFsBridge() ? !!NWJSApi.isFile(this.path) : false; } catch (e) { return false; } };
+        Stats.prototype.isDirectory = function () { try { return hasFsBridge() ? !!NWJSApi.isDir(this.path) : false; } catch (e) { return false; } };
+        Stats.prototype.isSymbolicLink = function () { return false; };
+
+        function WriteStream(path) {
+            this.path = path; this.chunks = []; this.destroyed = false;
+        }
+        WriteStream.prototype.write = function (chunk) {
+            if (typeof chunk === "string") this.chunks.push(window.Buffer ? Buffer.from(chunk) : chunk);
+            else this.chunks.push(chunk);
+        };
+        WriteStream.prototype.end = function (chunk) {
+            if (chunk !== undefined) this.write(chunk);
+            var buf = window.Buffer ? Buffer.concat(this.chunks) : { toString: function(){return this.chunks.join("");}, toJSON:function(){return{type:"Buffer",data:[]};} };
+            try { if (hasFsBridge()) NWJSApi.writeFileSync(this.path, JSON.stringify(buf.toJSON ? buf.toJSON() : buf)); } catch (e) {}
+        };
+        WriteStream.prototype.close = function () { this.end(); this.destroyed = true; };
+        WriteStream.prototype.destroy = function () { this.end(); this.destroyed = true; };
+        WriteStream.prototype.cork = function () {};
+        WriteStream.prototype.uncork = function () {};
+        WriteStream.prototype.setDefaultEncoding = function () {};
+
+        function readFileSyncImpl(path, options) {
+            if (!hasFsBridge()) return "";
+            var enc = null;
+            if (typeof options === "string" && options.length > 2) enc = options;
+            else if (options && options.encoding) enc = options.encoding;
+            var data;
+            if (enc) {
+                data = NWJSApi.readFileSync(path, enc);
+                if (data === "\b\b\b") throw new Error("readFileSync: Failed to read " + path);
+                return data;
+            } else {
+                data = NWJSApi.readFileSync(path, "");
+                if (data === "\b\b\b") throw new Error("readFileSync: Failed to read " + path);
+                try { return Buffer.from(JSON.parse(data)); } catch (e) { return Buffer.from(data); }
+            }
+        }
+
+        return {
+            existsSync: function (p) { try { return hasFsBridge() ? !!NWJSApi.existsSync(p) : false; } catch (e) { return false; } },
+            exists: function (p, cb) { var r = false; try { r = hasFsBridge() ? !!NWJSApi.existsSync(p) : false; } catch (e) {} if (typeof cb === "function") setTimeout(function(){cb(r);},0); },
+            mkdirSync: function (p) { try { if (hasFsBridge()) NWJSApi.mkdirSync(p); } catch (e) {} },
+            mkdir: function (p, o, cb) { if (typeof o === "function") cb = o; try { if (hasFsBridge()) NWJSApi.mkdirSync(p); } catch (e) {} if (typeof cb === "function") setTimeout(function(){cb(null);},0); },
+            writeFileSync: function (p, data) {
+                if (!hasFsBridge()) return;
+                try { NWJSApi.writeFileSync(p, JSON.stringify(Buffer.from(data).toJSON())); } catch (e) { try { NWJSApi.writeFileSync(p, String(data)); } catch (e2) {} }
+            },
+            writeFile: function (p, d, o, cb) { if (typeof o === "function") cb = o; try { this.writeFileSync(p,d); } catch (e) {} if (typeof cb === "function") setTimeout(function(){cb(null);},0); },
+            appendFileSync: function (p, d) { try { if (hasFsBridge()) NWJSApi.appendFileSync(p, String(d)); } catch (e) {} },
+            appendFile: function (p, d, o, cb) { if (typeof o === "function") cb = o; try { this.appendFileSync(p,d); } catch (e) {} if (typeof cb === "function") setTimeout(function(){cb(null);},0); },
+            readFileSync: function (p, o) { return readFileSyncImpl(p, o); },
+            readFile: function (p, o, cb) {
+                if (typeof o === "function") cb = o;
+                var data = ""; try { data = readFileSyncImpl(p, o); } catch (e) {}
+                if (typeof cb === "function") setTimeout(function(){cb(null, data);},0);
+                return data;
+            },
+            unlinkSync: function (p) { try { if (hasFsBridge()) NWJSApi.unlinkSync(p); } catch (e) {} },
+            unlink: function (p, cb) { try { if (hasFsBridge()) NWJSApi.unlinkSync(p); } catch (e) {} if (typeof cb === "function") setTimeout(function(){cb(null);},0); },
+            remove: function (p, cb) { try { if (hasFsBridge()) NWJSApi.unlinkSync(p); } catch (e) {} if (typeof cb === "function") setTimeout(function(){cb(null);},0); },
+            removeSync: function (p) { try { if (hasFsBridge()) NWJSApi.unlinkSync(p); } catch (e) {} },
+            openSync: function () { return 0; },
+            open: function (p, f, m, cb) { if (typeof m === "function") cb = m; if (typeof cb === "function") setTimeout(function () { cb(null, 0); }, 0); },
+            closeSync: function () {},
+            close: function (fd, cb) { if (typeof cb === "function") setTimeout(function () { cb(null); }, 0); },
+            readSync: function () { return 0; },
+            writeSync: function () { return 0; },
+            readdirSync: function (p) { try { if (hasFsBridge()) return JSON.parse(NWJSApi.readdirSync(p)); } catch (e) {} return []; },
+            readdir: function (p, o, cb) { if (typeof o === "function") cb = o; var r = []; try { r = this.readdirSync(p); } catch (e) {} if (typeof cb === "function") setTimeout(function () { cb(null, r); }, 0); },
+            statSync: function (p) { var s = new Stats(p); try { if (hasFsBridge()) s.size = NWJSApi.getSize(p); } catch (e) {} return s; },
+            stat: function (p, o, cb) { if (typeof o === "function") cb = o; var s = new Stats(p); if (typeof cb === "function") setTimeout(function(){cb(null,s);},0); return s; },
+            lstatSync: function (p) { var s = new Stats(p); try { if (hasFsBridge()) s.size = NWJSApi.getSize(p); } catch (e) {} return s; },
+            lstat: function (p, o, cb) { if (typeof o === "function") cb = o; var s = new Stats(p); if (typeof cb === "function") setTimeout(function(){cb(null,s);},0); return s; },
+            fstatSync: function (p) { return new Stats(p); },
+            createReadStream: function () { return { on: function () { return this; }, once: function () { return this; }, pipe: function () { return this; }, read: function () {}, close: function () {} }; },
+            createWriteStream: function (p) { return new WriteStream(p); },
+            watch: function () { return { close: function () {}, on: function () { return this; } }; },
+            watchFile: function () {}, unwatchFile: function () {},
+            renameSync: function (a,b) { try { if (hasFsBridge()) NWJSApi.renameFileSync(a,b); } catch (e) {} },
+            rename: function (a,b,cb) { try { if (hasFsBridge()) NWJSApi.renameFileSync(a,b); } catch (e) {} if (typeof cb === "function") setTimeout(function(){cb(null);},0); },
+            copyFileSync: function (a,b) { try { if (hasFsBridge()) NWJSApi.copyFileSync(a,b); } catch (e) {} },
+            copyFile: function (a,b,cb) { try { if (hasFsBridge()) NWJSApi.copyFileSync(a,b); } catch (e) {} if (typeof cb === "function") setTimeout(function(){cb(null);},0); },
+            chmodSync: function () {}, chownSync: function () {},
+            Stats: Stats,
+            promises: {
+                readFile: function (p, o) { try { return Promise.resolve(readFileSyncImpl(p,o)); } catch (e) { return Promise.resolve(""); } },
+                writeFile: function (p,d) { try { if (hasFsBridge()) NWJSApi.writeFileSync(p, JSON.stringify(Buffer.from(d).toJSON())); } catch (e) {} return Promise.resolve(); },
+                mkdir: function () { return Promise.resolve(); },
+                readdir: function (p) { try { if (hasFsBridge()) return Promise.resolve(JSON.parse(NWJSApi.readdirSync(p))); } catch (e) {} return Promise.resolve([]); },
+                stat: function (p) { return Promise.resolve(new Stats(p)); },
+                unlink: function (p) { try { if (hasFsBridge()) NWJSApi.unlinkSync(p); } catch (e) {} return Promise.resolve(); }
+            }
+        };
+    })();
+
+    // ── path（JoiPlay 真 path@posix 需要 process.cwd，此处用桥版 resolve） ──
+    var pathStub = (function(){
+        // 内联 JoiPlay 的 path posix 核心（已验证可脱离 process.cwd 降级）
+        function normalizeStringPosix(path, allowAboveRoot) {
+            var res = '', lastSegmentLength = 0, lastSlash = -1, dots = 0, code;
+            for (var i = 0; i <= path.length; ++i) {
+                if (i < path.length) code = path.charCodeAt(i);
+                else if (code === 47) break; else code = 47;
+                if (code === 47) {
+                    if (lastSlash === i - 1 || dots === 1) {}
+                    else if (lastSlash !== i - 1 && dots === 2) {
+                        if (res.length < 2 || lastSegmentLength !== 2 || res.charCodeAt(res.length-1)!==46 || res.charCodeAt(res.length-2)!==46) {
+                            if (res.length > 2) {
+                                var idx = res.lastIndexOf('/');
+                                if (idx !== res.length - 1) {
+                                    if (idx === -1) { res=''; lastSegmentLength=0; } else { res=res.slice(0,idx); lastSegmentLength=res.length-1-res.lastIndexOf('/'); }
+                                    lastSlash=i; dots=0; continue;
+                                }
+                            } else if (res.length===2||res.length===1) { res=''; lastSegmentLength=0; lastSlash=i; dots=0; continue; }
+                        }
+                        if (allowAboveRoot) { if(res.length>0) res+='/..'; else res='..'; lastSegmentLength=2; }
+                    } else {
+                        if(res.length>0) res+='/'+path.slice(lastSlash+1,i); else res=path.slice(lastSlash+1,i);
+                        lastSegmentLength=i-lastSlash-1;
+                    }
+                    lastSlash=i; dots=0;
+                } else if (code===46 && dots!==-1) ++dots; else dots=-1;
+            }
+            return res;
+        }
+        var posix = {
+            resolve: function(){ var rp='', ra=false, cwd; for(var i=arguments.length-1;i>=-1&&!ra;i--){var p; if(i>=0) p=arguments[i]; else { if(cwd===undefined) try{cwd=hasBridge()?NWJSApi.execDir():"/";}catch(e){cwd="/";} p=cwd; } if(typeof p!=="string") throw new TypeError('Path must be a string'); if(p.length===0) continue; rp=p+'/'+rp; ra=p.charCodeAt(0)===47; } rp=normalizeStringPosix(rp,!ra); if(ra) return rp.length>0?'/'+rp:'/'; return rp.length>0?rp:'.'; },
+            normalize: function(p){ if(typeof p!=="string") throw new TypeError('Path must be a string'); if(p.length===0) return '.'; var isAbs=p.charCodeAt(0)===47, trail=p.charCodeAt(p.length-1)===47; p=normalizeStringPosix(p,!isAbs); if(p.length===0&&!isAbs) p='.'; if(p.length>0&&trail) p+='/'; return isAbs?'/'+p:p; },
+            isAbsolute: function(p){ return typeof p==="string"&&p.length>0&&p.charCodeAt(0)===47; },
+            join: function(){ if(arguments.length===0) return '.'; var j; for(var i=0;i<arguments.length;++i){var a=arguments[i]; if(typeof a!=="string") throw new TypeError('Path must be a string'); if(a.length>0){ if(j===undefined) j=a; else j+='/'+a; } } return j===undefined?'.':posix.normalize(j); },
+            relative: function(from,to){ if(from===to) return ''; from=posix.resolve(from); to=posix.resolve(to); if(from===to) return ''; var fs=1,fe=from.length,fl=fe-fs, ts=1,te=to.length,tl=te-ts, len=fl<tl?fl:tl, lcs=-1, i=0; for(;i<=len;++i){ if(i===len){ if(tl>len){ if(to.charCodeAt(ts+i)===47) return to.slice(ts+i+1); else if(i===0) return to.slice(ts+i); } else if(fl>len){ if(from.charCodeAt(fs+i)===47) lcs=i; else if(i===0) lcs=0; } break; } var fc=from.charCodeAt(fs+i), tc=to.charCodeAt(ts+i); if(fc!==tc) break; else if(fc===47) lcs=i; } var out=''; for(i=fs+lcs+1;i<=fe;++i) if(i===fe||from.charCodeAt(i)===47) out=out.length===0?'..':out+'/..'; return out.length>0?out+to.slice(ts+lcs): (function(){ ts+=lcs; if(to.charCodeAt(ts)===47) ++ts; return to.slice(ts); })(); },
+            dirname: function(p){ if(typeof p!=="string") throw new TypeError('Path must be a string'); if(p.length===0) return '.'; var code=p.charCodeAt(0), hasRoot=code===47, end=-1, ms=true; for(var i=p.length-1;i>=1;--i){ code=p.charCodeAt(i); if(code===47){ if(!ms){ end=i; break; } } else ms=false; } if(end===-1) return hasRoot?'/':'.'; if(hasRoot&&end===1) return '//'; return p.slice(0,end); },
+            basename: function(p,ext){ if(ext!==undefined&&typeof ext!=="string") throw new TypeError('"ext" must be a string'); if(typeof p!=="string") throw new TypeError('Path must be a string'); var s=0,e=-1,ms=true; if(ext!==undefined&&ext.length>0&&ext.length<=p.length){ if(ext.length===p.length&&ext===p) return ''; var ei=ext.length-1, fne=-1; for(var i=p.length-1;i>=0;--i){ var c=p.charCodeAt(i); if(c===47){ if(!ms){ s=i+1; break; } } else { if(fne===-1){ ms=false; fne=i+1; } if(ei>=0){ if(c===ext.charCodeAt(ei)){ if(--ei===-1) e=i; } else { ei=-1; e=fne; } } } } if(s===e) e=fne; else if(e===-1) e=p.length; return p.slice(s,e); } for(var j=p.length-1;j>=0;--j){ if(p.charCodeAt(j)===47){ if(!ms){ s=j+1; break; } } else if(e===-1){ ms=false; e=j+1; } } return e===-1?'':p.slice(s,e); },
+            extname: function(p){ if(typeof p!=="string") throw new TypeError('Path must be a string'); var sd=-1,sp=0,end=-1,ms=true,pds=0; for(var i=p.length-1;i>=0;--i){ var c=p.charCodeAt(i); if(c===47){ if(!ms){ sp=i+1; break; } continue; } if(end===-1){ ms=false; end=i+1; } if(c===46){ if(sd===-1) sd=i; else if(pds!==1) pds=1; } else if(sd!==-1) pds=-1; } if(sd===-1||end===-1||pds===0||pds===1&&sd===end-1&&sd===sp+1) return ''; return p.slice(sd,end); },
+            format: function(o){ var d=o.dir||o.root, b=o.base||(o.name||'')+(o.ext||''); if(!d) return b; if(d===o.root) return d+b; return d+'/'+b; },
+            parse: function(p){ if(typeof p!=="string") throw new TypeError('Path must be a string'); var r={root:'',dir:'',base:'',ext:'',name:''}; if(p.length===0) return r; var isAbs=p.charCodeAt(0)===47, s; if(isAbs){ r.root='/'; s=1; } else s=0; var sd=-1,sp=0,end=-1,ms=true, i=p.length-1, pds=0; for(;i>=s;--i){ var c=p.charCodeAt(i); if(c===47){ if(!ms){ sp=i+1; break; } continue; } if(end===-1){ ms=false; end=i+1; } if(c===46){ if(sd===-1) sd=i; else if(pds!==1) pds=1; } else if(sd!==-1) pds=-1; } if(sd===-1||end===-1||pds===0||pds===1&&sd===end-1&&sd===sp+1){ if(end!==-1){ if(sp===0&&isAbs) r.base=r.name=p.slice(1,end); else r.base=r.name=p.slice(sp,end); } } else { if(sp===0&&isAbs){ r.name=p.slice(1,sd); r.base=p.slice(1,end); } else { r.name=p.slice(sp,sd); r.base=p.slice(sp,end); } r.ext=p.slice(sd,end); } if(sp>0) r.dir=p.slice(0,sp-1); else if(isAbs) r.dir='/'; return r; },
+            sep: '/', delimiter: ':', win32: null, posix: null
+        };
+        posix.posix=posix; posix.win32=posix;
+        return posix;
+    })();
 
     var osStub = {
-        platform: function () { return "linux"; }, arch: function () { return "x64"; }, type: function () { return "Linux"; },
-        release: function () { return "0.0.0"; }, homedir: function () { return "/"; }, tmpdir: function () { return "/tmp"; },
+        platform: function () { return "win32"; }, arch: function () { return "x64"; }, type: function () { return "Windows_NT"; },
+        release: function () { return "10.0.0"; }, homedir: function () { try{return hasBridge()?NWJSApi.execDir():"/";}catch(e){return "/";} }, tmpdir: function () { return "/tmp"; },
         hostname: function () { return "localhost"; }, cpus: function () { return []; }, totalmem: function () { return 0; }, freemem: function () { return 0; }, EOL: "\n"
     };
     var utilStub = {
@@ -223,7 +363,10 @@
         stringify: function (o) { return Object.keys(o).map(function (k) { return encodeURIComponent(k) + "=" + encodeURIComponent(o[k]); }).join("&"); },
         escape: encodeURIComponent, unescape: decodeURIComponent
     };
+    // ── nw.gui（JoiPlay 真实现：Clipboard/窗口/剪贴板走桥） ─────────────────
     var nwGuiStub = (function () {
+        function hasNwBridge(){ return hasBridge() && NWJSApi.execDir; }
+        var execDirCache = ""; try{ execDirCache = hasBridge()?NWJSApi.execDir():""; }catch(e){}
         var winStub = {
             close: function () {}, showDevTools: function () {}, focus: function () {}, blur: function () {},
             moveBy: function () {}, resizeBy: function () {}, moveTo: function () {}, resizeTo: function () {},
@@ -231,28 +374,41 @@
             setAlwaysOnTop: function () {}, enterFullscreen: function () {}, leaveFullscreen: function () {},
             maximize: function () {}, unmaximize: function () {}, minimize: function () {}, restore: function () {},
             show: function () {}, hide: function () {}, reload: function () { location.reload(); }, reloadIgnoringCache: function () { location.reload(); },
-            x: 0, y: 0, width: 816, height: 624, title: "", menu: null, isFullscreen: false
+            x: 0, y: 0, width: 1270, height: 720, title: "JoiPlay", menu: null, isFullscreen: true,
+            evalNWBin: function(frame, path){
+                try {
+                    if (!hasNwBridge() || !NWJSApi.getNWBin) return;
+                    var src = NWJSApi.getNWBin(String(path));
+                    if (src) (0, eval)(src);
+                } catch (e) { console.warn("[nw-polyfill] evalNWBin failed", e && e.message); }
+            }
         };
+        winStub.evalNWBinAsync = winStub.evalNWBin;
         function Menu(opt) { this.type = (opt && opt.type) || "contextmenu"; this.items = []; }
         Menu.prototype.append = function (i) { this.items.push(i); }; Menu.prototype.insert = function (i, p) { this.items.splice(p, 0, i); };
         Menu.prototype.remove = function (i) { var idx = this.items.indexOf(i); if (idx >= 0) this.items.splice(idx, 1); };
         Menu.prototype.removeAt = function (i) { this.items.splice(i, 1); }; Menu.prototype.createMacBuiltin = function () {}; Menu.prototype.popup = function () {};
         function MenuItem(opt) { this.label = (opt && opt.label) || ""; this.type = (opt && opt.type) || "normal"; this.click = opt && opt.click; this.enabled = true; this.submenu = opt && opt.submenu; }
-        var clipboardStub = { set: function () {}, get: function () { return ""; }, clear: function () {} };
-        var shellStub = { openExternal: function (url) { try { window.open(url, "_blank"); } catch (e) {} }, openItem: function () {}, showItemInFolder: function () {} };
+        var clipboardInst = {
+            get: function(){ try{ return hasNwBridge()?NWJSApi.getClipboard():""; }catch(e){return "";} },
+            set: function(t){ try{ if(hasNwBridge()) NWJSApi.setClipboard(String(t)); }catch(e){} },
+            clear: function(){ try{ if(hasNwBridge()) NWJSApi.setClipboard(""); }catch(e){} },
+            readAvailableTypes: function(){ return ["text"]; }
+        };
+        var shellStub = { openExternal: function (url) { try { if(hasNwBridge()) NWJSApi.openUrl(url); else window.open(url, "_blank"); } catch (e) { try{window.open(url,"_blank");}catch(e2){} } }, openItem: function (p){ try{ if(hasNwBridge()) NWJSApi.openUrl(p); }catch(e){} }, showItemInFolder: function (p){ try{ if(hasNwBridge()) NWJSApi.openUrl(p); }catch(e){} } };
         var screenStub = { Init: function () {}, screens: [], chooseDesktopMedia: function (a, cb) { if (typeof cb === "function") cb(""); } };
         return {
-            Window: { get: function () { return winStub; }, open: function () { return winStub; } },
-            Menu: Menu, MenuItem: MenuItem, Clipboard: { get: function () { return clipboardStub; } },
+            Window: { get: function () { return winStub; }, open: function (u) { try{ window.open(u);}catch(e){} return winStub; } },
+            Menu: Menu, MenuItem: MenuItem, Clipboard: { get: function () { return clipboardInst; } },
             Shell: shellStub, Screen: screenStub,
-            App: { argv: [], fullArgv: [], manifest: {}, dataPath: "/tmp", clearCache: function () {}, closeAllWindows: function () {}, quit: function () {}, on: function () {}, removeAllListeners: function () {} }
+            App: { argv: (function(){ try{return hasNwBridge()?["--6bdb2e585882fbd48826ef9cffd4c511"]:[];}catch(e){return [];}})(), fullArgv: [], manifest: {}, dataPath: (function(){ try{return hasNwBridge()?NWJSApi.execDir()+"/AppData":"/tmp";}catch(e){return "/tmp";}})(), clearCache: function () {}, closeAllWindows: function () {}, quit: function () {}, on: function () {}, removeAllListeners: function () {} }
         };
     })();
 
     var moduleCache = {};
     function resolveRequire(name) {
-        if (name === "fs") return fsStub;
-        if (name === "path") return pathStub;
+        if (name === "fs" || name === "fs-extra") return fsStub;
+        if (name === "path" || name === "path/posix") return pathStub;
         if (name === "os") return osStub;
         if (name === "util") return utilStub;
         if (name === "events") return eventsStub;
@@ -260,8 +416,11 @@
         if (name === "crypto") return cryptoStub;
         if (name === "url") return urlStub;
         if (name === "querystring") return querystringStub;
-        if (name === "nw.gui") return nwGuiStub;
+        if (name === "nw.gui" || name === "nw.gui.Window" || name === "nw.gui.Clipboard") return nwGuiStub;
+        if (name === "nw") return (function(){ var m={}; try{ m.gui=nwGuiStub; m.Window=nwGuiStub.Window; m.App=nwGuiStub.App; m.process=proc; m.__dirname=(function(){try{return hasBridge()?NWJSApi.execDir():"/";}catch(e){return "/";}})(); }catch(e){} return m; })();
         if (name === "buffer") return { Buffer: window.Buffer };
+        if (name === "electron") return { app: { getAppPath:function(){return "";}, on:function(){} }, BrowserWindow: function(){}, remote: { app: { getAppPath:function(){return "";}} } };
+        if (name === "greenworks" || name === "steamworks") return { init:function(){return true;}, isSteamRunning:function(){return false;}, getSteamId:function(){return null;} };
         if (!moduleCache[name]) moduleCache[name] = {};
         return moduleCache[name];
     }
@@ -275,11 +434,49 @@
     if (typeof window.require.cache === "undefined") window.require.cache = {};
     if (typeof window.module === "undefined") window.module = { exports: {} };
     if (typeof window.exports === "undefined") window.exports = window.module.exports;
-    if (typeof window.nw === "undefined") window.nw = nwGuiStub;
-    if (typeof window.gui === "undefined") window.gui = nwGuiStub;
+    // nw 命名空间（JoiPlay：window.nw = nwGui 扩展）
+    (function(){
+        try {
+            var exe=""; try{ exe=hasBridge()?NWJSApi.execDir():""; }catch(e){}
+            var nwObj = resolveRequire("nw");
+            nwObj.gui = nwGuiStub;
+            nwObj.Window = nwGuiStub.Window;
+            nwObj.App = nwGuiStub.App;
+            nwObj.Shell = nwGuiStub.Shell;
+            nwObj.Clipboard = nwGuiStub.Clipboard;
+            nwObj.Menu = nwGuiStub.Menu;
+            if (typeof window.nw === "undefined") window.nw = nwObj;
+            if (typeof window.gui === "undefined") window.gui = nwGuiStub;
+            // 兼容：部分游戏用 require('nw.gui') 直接取
+        } catch(e){}
+    })();
     try { if (typeof globalThis !== "undefined" && !globalThis.require) globalThis.require = window.require; } catch (e) {}
     try { if (typeof globalThis !== "undefined" && !globalThis.nw) globalThis.nw = window.nw; } catch (e) {}
     try { if (typeof globalThis !== "undefined" && !globalThis.Buffer) globalThis.Buffer = window.Buffer; } catch (e) {}
+    // speechSynthesis / screen.orientation / joiSaveAs（对齐 globals.js）
+    try {
+        if (typeof window.speechSynthesis === "undefined") window.speechSynthesis = { getVoices:function(){return [];}, cancel:function(){}, pause:function(){}, resume:function(){}, speak:function(){} };
+        if (typeof window.gc === "undefined") window.gc = function(){};
+        if (typeof window.focus === "undefined") window.focus = function(){};
+        if (typeof window.on === "undefined") window.on = function(n,f){ try{ window.addEventListener(n,f); }catch(e){} };
+        try {
+            if (hasBridge() && window.screen && window.screen.orientation) {
+                var _origLock = window.screen.orientation.lock && window.screen.orientation.lock.bind(window.screen.orientation);
+                window.screen.orientation.lock = function(o){ try{ NWJSApi.lockOrientation(String(o)); return Promise.resolve(); }catch(e){ return Promise.resolve(); } };
+                window.screen.orientation.unlock = function(){ try{ NWJSApi.unlockOrientation(); }catch(e){} };
+            }
+        } catch(e){}
+        window.joiSaveAs = function(blob, type, path){
+            try{
+                var reader = new FileReader();
+                reader.readAsDataURL(blob);
+                reader.onloadend = function(){ try{ NWJSApi.saveBlob(reader.result, path||""); }catch(e){} };
+            }catch(e){}
+        };
+        window.Clipboard = nwGuiStub.Clipboard.get();
+        window.clipboard = window.Clipboard;
+        window.App = nwGuiStub.App;
+    } catch(e){}
 
     (function ensureWindowCompat() {
         var pendingStub = false;
@@ -385,7 +582,7 @@
                     }
                     if (window.Graphics._updateProgressCount && !window.Graphics._updateProgressCount.__tyranorPatched) {
                         var oc = window.Graphics._updateProgressCount;
-                        window.Graphics._updateProgressCount = function () { if (!this._progressElement || !this._progressElement.style || !this._filledBarElement || !this._filledBarElement.style) return; return oc.apply(this, arguments); };
+                        window.Graphics._updateProgressCount = function () { if (!this._progressElement || !this._progressElement.style || !this._progressElement.style) return; return oc.apply(this, arguments); };
                         window.Graphics._updateProgressCount.__tyranorPatched = true;
                     }
                 }
@@ -401,5 +598,5 @@
         }
     } catch (e) {}
 
-    console.log("[nw-polyfill] full installed (fs/path/os/util/events/child_process/crypto/url/nw.gui/Buffer/process)");
+    console.log("[nw-polyfill] full installed (fs/path/os/util/events/child_process/crypto/url/nw.gui/Buffer/process) bridge=" + hasBridge());
 })();

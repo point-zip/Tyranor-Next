@@ -203,16 +203,18 @@ class TyranoActivity : Activity() {
             if (webGameType == WebGameType.RPG_MZ && normalizedVersion == "v1") {
                 android.util.Log.i(TAG, "MZ v1 is placeholder, falling back to v0 resources")
             }
-            val nwPolyfill = if (webGameType == WebGameType.RPG_MV || webGameType == WebGameType.RPG_MZ) {
+            val nwPolyfill = if (webGameType == WebGameType.RPG_MV || webGameType == WebGameType.RPG_MZ || webGameType == WebGameType.WEB_OTHER) {
                 try {
                     val base = String(loadAsset(NWJS_POLYFILL_ASSET), Charsets.UTF_8)
+                    // WebGL 升级（JoiPlay webgl.js 移植）—— 必须在 polyfill 之后、v1 之前
+                    val webgl = try { String(loadAsset(NWJS_WEBGL_ASSET), Charsets.UTF_8) } catch (_: Exception) { "" }
                     // v1 专属兜底仅注入到 v1 会话，v0 保持与历史版本一致的注入内容
                     val v1Only = if (isRpgMvV1) {
                         loadAsset(NWJS_POLYFILL_V1_EXTRA_ASSET).toString(Charsets.UTF_8)
                     } else {
                         ""
                     }
-                    (base + v1Only).toByteArray(Charsets.UTF_8)
+                    (base + "\n" + webgl + "\n" + v1Only).toByteArray(Charsets.UTF_8)
                 } catch (_: Exception) { ByteArray(0) }
             } else {
                 ByteArray(0)
@@ -262,6 +264,18 @@ class TyranoActivity : Activity() {
         setContentView(root)
 
         configureWebView(browser)
+        // NW.js 桥 — 对标 JoiPlay 的 NWJSApi（HTMLActivity.java:904）
+        // 仅对可能消费 Node/NW API 的游戏类型注册，注入顺序在 configure 之后、loadUrl 之前
+        run {
+            val needsNwBridge = webGameType == WebGameType.RPG_MV ||
+                webGameType == WebGameType.RPG_MZ ||
+                webGameType == WebGameType.WEB_OTHER
+            if (needsNwBridge) {
+                val nwBridge = NwJsBridge(this, contentRoot, saves)
+                browser.addJavascriptInterface(nwBridge, NwJsBridge.JS_NAME)
+                Log.i(TAG, "NWJSApi bridge registered for ${webGameType.intentValue} root=${contentRoot.absolutePath}")
+            }
+        }
         when (webGameType) {
             WebGameType.RPG_MV, WebGameType.RPG_MZ -> {
                 browser.addJavascriptInterface(RpgMakerSaveBridge(saves), RPG_MAKER_SAVE_BRIDGE_NAME)
@@ -437,7 +451,10 @@ class TyranoActivity : Activity() {
         }
         runCatching { android.webkit.WebView.setWebContentsDebuggingEnabled(true) }
         browser.settings.apply {
-            userAgentString = "$userAgentString;tyranoplayer-android-1.0;yukihub-internal-tyrano"
+            // JoiPlay UA 伪装：桌面 Chrome/80 + NWjs/0.32.0，骗过游戏的 NW.js 检测
+            val baseUa = userAgentString
+            val nwSuffix = " NWjs/0.32.0 Chrome/80.0.3987.87"
+            userAgentString = if (baseUa.contains("NWjs")) baseUa else baseUa + nwSuffix + ";tyranoplayer-android-1.0;yukihub-internal-tyrano"
             javaScriptEnabled = true
             allowContentAccess = false
             allowFileAccess = false
@@ -1016,6 +1033,7 @@ class TyranoActivity : Activity() {
         private const val RPG_MZ_HOOK_ASSET = "__rmmz__.js"
         private const val TOUCH_PAD_ASSET = "__touch_pad.js"
         private const val NWJS_POLYFILL_ASSET = "__nwjs_polyfill.js"
+        private const val NWJS_WEBGL_ASSET = "__nwjs_webgl.js"
         private const val NWJS_POLYFILL_V1_EXTRA_ASSET = "__nwjs_polyfill_v1.js"
         private const val RPG_MZ_CORE_HOOK_ASSET = "__hook_rmmz_core.js"
         private const val RPG_MZ_MANAGERS_HOOK_ASSET = "__hook_rmmz_managers.js"
