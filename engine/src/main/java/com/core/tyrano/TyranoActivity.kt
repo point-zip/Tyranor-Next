@@ -1031,7 +1031,7 @@ class TyranoActivity : Activity() {
         private const val EXTRA_RPG_MAKER_VERSION = "rpgMakerVersion"
         private const val EXTRA_RPG_LEGACY_RENDERER = "rpgLegacyRenderer"
 
-        /** MV/MZ 渲染诊断脚本：canvas 尺寸/缩放/渲染器/当前场景/GL 中心像素采样 */
+        /** MV/MZ 渲染诊断脚本：canvas 尺寸/缩放/渲染器/当前场景/GL 中心像素采样 + Scene_Boot 卡死定位 */
         private val RENDER_DIAGNOSTIC_JS = """
             (function(){
               try {
@@ -1059,6 +1059,29 @@ class TyranoActivity : Activity() {
                     r.centerPixel = Array.prototype.slice.call(px);
                   } else { r.glErr = 'no-gl'; }
                 } catch(e2) { r.glErr = 'exc:' + e2.message; }
+                try {
+                  if (window.DataManager) {
+                    try { r.dbLoaded = DataManager.isDatabaseLoaded(); }
+                    catch(e3) { r.dbError = (e3 && e3.message) || String(e3); }
+                    if (DataManager._databaseFiles) {
+                      var miss = [];
+                      for (var i = 0; i < DataManager._databaseFiles.length; i++) {
+                        var n = DataManager._databaseFiles[i].name;
+                        if (!window[n]) miss.push(DataManager._databaseFiles[i].src);
+                      }
+                      r.missingDb = miss;
+                    }
+                  }
+                  r.fontLoaded = (window.Graphics && typeof Graphics.isFontLoaded === 'function') ? Graphics.isFontLoaded('GameFont') : null;
+                  r.cssFontLoading = window.Graphics ? !!Graphics._cssFontLoading : null;
+                  r.fontsReady = window.Graphics ? !!Graphics._fontLoaded : null;
+                  if (document.fonts) {
+                    r.fontsStatus = document.fonts.status;
+                    var fl = [];
+                    document.fonts.forEach(function(f){ fl.push([f.family, f.status]); });
+                    r.fontFaces = fl;
+                  }
+                } catch(e4) { r.bootErr = 'exc:' + e4.message; }
                 return JSON.stringify(r);
               } catch(e) { return 'diag-crashed: ' + e.message; }
             })();
