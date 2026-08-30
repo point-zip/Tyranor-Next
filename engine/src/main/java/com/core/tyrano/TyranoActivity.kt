@@ -1082,6 +1082,18 @@ class TyranoActivity : Activity() {
                     r.fontFaces = fl;
                   }
                 } catch(e4) { r.bootErr = 'exc:' + e4.message; }
+                try {
+                  // 主循环存活与劫持检测：frameCount 两次采样对比即可知是否在跳
+                  r.gFrame = (window.Graphics && typeof Graphics.frameCount === 'number') ? Graphics.frameCount : null;
+                  r.smFrame = (window.SceneManager && typeof SceneManager.frameCount === 'function') ? SceneManager.frameCount() : null;
+                  r.nextScene = window.SceneManager ? !!SceneManager._nextScene : null;
+                  r.stopped = window.SceneManager ? !!SceneManager._stopped : null;
+                  r.busy = (window.SceneManager && SceneManager._scene && typeof SceneManager._scene.isBusy === 'function') ? !!SceneManager._scene.isBusy() : null;
+                  r.updateSrc = (window.SceneManager && typeof SceneManager.update === 'function') ? SceneManager.update.toString().slice(0, 90) : null;
+                  r.updateMainSrc = (window.SceneManager && typeof SceneManager.updateMain === 'function') ? SceneManager.updateMain.toString().slice(0, 90) : null;
+                  r.bootUpdateSrc = (window.Scene_Boot && typeof Scene_Boot.prototype.update === 'function') ? Scene_Boot.prototype.update.toString().slice(0, 90) : null;
+                  r.rafType = typeof window.requestAnimationFrame;
+                } catch(e5) { r.loopErr = 'exc:' + e5.message; }
                 return JSON.stringify(r);
               } catch(e) { return 'diag-crashed: ' + e.message; }
             })();

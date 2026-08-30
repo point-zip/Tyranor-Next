@@ -71,5 +71,36 @@
         setTimeout(function () { try { clearInterval(pleTimer); } catch (e) {} }, 8000);
     })();
 
-    console.log("[nw-polyfill-v1] installed (exitFullscreen/printLoadingError)");
+    // Boot 卡死强推：Scene_Boot 停留超过 15s 且加载条件（数据库+字体）均已满足时，
+    // 直接 goto(Scene_Title)。条件与 Scene_Boot.isStartLoaded 完全一致，风险为：
+    // 跳过游戏在 boot 阶段的自定义 start 逻辑（该游戏实测无额外逻辑）。
+    // 若 frameCount 为 0（主循环未启动）则同时重新 kickstart rAF
+    (function () {
+        var firstReady = 0;
+        var kicked = false;
+        var forceTimer = setInterval(function () {
+            try {
+                if (!window.SceneManager || !window.SceneManager._scene) return;
+                if (window.SceneManager._scene.constructor.name !== "Scene_Boot") { clearInterval(forceTimer); return; }
+                if (!window.DataManager || typeof DataManager.isDatabaseLoaded !== "function" || !DataManager.isDatabaseLoaded()) return;
+                if (!window.Graphics || typeof Graphics.isFontLoaded !== "function" || !Graphics.isFontLoaded("GameFont")) return;
+                if (!firstReady) { firstReady = Date.now(); return; }
+                if (Date.now() - firstReady < 15000) return;
+                var frames = (window.SceneManager && typeof SceneManager.frameCount === "function") ? SceneManager.frameCount() : (typeof Graphics.frameCount === "number" ? Graphics.frameCount : -1);
+                if (frames === 0 && !kicked) {
+                    kicked = true;
+                    console.warn("[nw-polyfill-v1] main loop dead (frameCount=0), kickstarting rAF");
+                    window.SceneManager._stopped = false;
+                    window.SceneManager.requestUpdate();
+                    return;
+                }
+                clearInterval(forceTimer);
+                console.warn("[nw-polyfill-v1] boot stalled " + (Date.now() - firstReady) + "ms with frames=" + frames + ", forcing goto(Scene_Title)");
+                window.SceneManager.goto(window.Scene_Title);
+            } catch (e) {}
+        }, 1000);
+        window.addEventListener("pagehide", function () { try { clearInterval(forceTimer); } catch (e) {} });
+    })();
+
+    console.log("[nw-polyfill-v1] installed (exitFullscreen/printLoadingError/fontCheck/bootForce)");
 })();
