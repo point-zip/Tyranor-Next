@@ -31,8 +31,7 @@
         var hasWebGL2Canvas;
         try { hasWebGL2Canvas = !!(document.createElement("canvas").getContext("webgl2")); } catch (e) { hasWebGL2Canvas = false; }
         if (!hasWebGL2Canvas) return;
-        }
-        
+
         function WebGLDummyExtension(gl) {
             this.gl = gl;
             this.createVertexArrayOES = function(){
@@ -201,6 +200,66 @@
                 "override": "if (ConfigManager._lastSaveIndex != null || ConfigManager._lastSaveIndex[1] != null) {"
         }
 ]; } catch (e3) {}
+
+    // ---- 3959930_1.19 repro fix: loadGame returns JsonEx-parsed objects whose prototype
+    // can be stripped if the decompressed payload was null/truncated — then
+    // Scene_Map.create crashes on this._transfer = $gamePlayer.isTransferring().
+    // Keep the fix in v2 (never in base/v1): rehydrate + guard transfer on read.
+    (function () {
+        var timer = setInterval(function () {
+            try {
+                if (typeof window.DataManager === "undefined" || typeof window.DataManager.extractSaveContents !== "function") return;
+                if (DataManager.extractSaveContents.__tyranorV2Patched) { clearInterval(timer); return; }
+                var orig = DataManager.extractSaveContents;
+                DataManager.extractSaveContents = function (contents) {
+                    try {
+                        // Hardened rehydration: if JsonEx produced plain objects, restore prototypes.
+                        // Game_Player/Game_Map et al are already defined when loadGame runs.
+                        if (contents && contents.player && typeof contents.player.isTransferring !== "function" && typeof window.Game_Player !== "undefined") {
+                            try {
+                                var proto = window.Game_Player.prototype;
+                                if (!contents.player.__proto__ || contents.player.__proto__ === Object.prototype) {
+                                    Object.setPrototypeOf(contents.player, proto);
+                                }
+                            } catch (e2) {}
+                        }
+                        if (contents && contents.map && typeof contents.map.mapId !== "function" && typeof window.Game_Map !== "undefined") {
+                            try { Object.setPrototypeOf(contents.map, window.Game_Map.prototype); } catch (e3) {}
+                        }
+                    } catch (e) {}
+                    return orig.call(this, contents);
+                };
+                DataManager.extractSaveContents.__tyranorV2Patched = true;
+                clearInterval(timer);
+            } catch (e4) {}
+        }, 200);
+        setTimeout(function () { try { clearInterval(timer); } catch (e) {} }, 10000);
+    })();
+
+    // Scene_Map.create guard is the second line of defense if the save is genuinely truncated.
+    (function () {
+        var timer2 = setInterval(function () {
+            try {
+                if (typeof window.Scene_Map === "undefined" || typeof window.Scene_Map.prototype.create !== "function") return;
+                if (window.Scene_Map.prototype.create.__tyranorV2Patched) { clearInterval(timer2); return; }
+                var origCreate = window.Scene_Map.prototype.create;
+                window.Scene_Map.prototype.create = function () {
+                    // Guard: degraded $gamePlayer must not throw here; DataManager already logged [rpg-save].
+                    if (typeof $gamePlayer === "undefined" || !$gamePlayer || typeof $gamePlayer.isTransferring !== "function") {
+                        console.warn("[nw-polyfill-v2] Scene_Map.create: $gamePlayer degraded, forcing _transfer=false");
+                        try { Scene_Base.prototype.create.call(this); } catch (e) {}
+                        this._transfer = false;
+                        try { DataManager.loadMapData($gameMap ? $gameMap.mapId() : 1); } catch (e2) {}
+                        return;
+                    }
+                    return origCreate.call(this);
+                };
+                window.Scene_Map.prototype.create.__tyranorV2Patched = true;
+                clearInterval(timer2);
+            } catch (e3) {}
+        }, 200);
+        setTimeout(function () { try { clearInterval(timer2); } catch (e) {} }, 10000);
+    })();
 
     console.log("[nw-polyfill-v2] JoiPlay compat installed (webgl shims + overrides + joiSaveAs)");
 })();
