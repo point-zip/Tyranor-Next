@@ -1142,17 +1142,15 @@ class TyranoActivity : Activity() {
         )
 
         // v1 覆盖：MV 1.6.1 核心（值契约来源：EngineSettingsStore.RPG_MV_V1 = "v1"）
-        // v0 基准：rpgMakerVersion=v0 时完全不用覆盖，整套用游戏自带 js/。
-        // v1 覆盖 12 项是为修 3959930 等通用问题，但 Echoes 等定制 Decrypter/Pixi
-        // 被覆盖会丢 80+ 轮置换或把 Bitmap 的 2d 离屏 canvas 误劫。类级别判定：
-        // - 若游戏含任一定制特征（code_map_drillup / Decrypter.code_map），整包跳过 v1 覆盖（回退到 v0 基准），
-        //   保留游戏自带整套；其它 v1 游戏仍走 12 项覆盖。
-        private fun isCustomDecrypterGame(contentRoot: File): Boolean {
+        // v0 基准是游戏自带整套直跑，仅做补丁不做整文件替换。
+        // 按文件特征单项跳过，不做整包回退：定制 rpg_core.js 保留游戏解密，其余仍走 v1 通用修复。
+        private fun shouldSkipV1OverlayFile(path: String, contentRoot: File): Boolean {
+            if (path != "js/rpg_core.js") return false
             return try {
                 val candidates = listOf(
-                    File(contentRoot, "js/rpg_core.js"),
-                    File(contentRoot, "www/js/rpg_core.js"),
-                    File(contentRoot.parentFile ?: contentRoot, "js/rpg_core.js"),
+                    File(contentRoot, path),
+                    File(contentRoot, "www/$path"),
+                    File(contentRoot.parentFile ?: contentRoot, path),
                 )
                 val f = candidates.firstOrNull { it.isFile } ?: return false
                 val len = f.length()
@@ -1176,20 +1174,7 @@ class TyranoActivity : Activity() {
             } catch (_: Throwable) { false }
         }
 
-        // 兼容旧名单：单项跳过（保留接口，内部走整包判定）
-        private fun shouldSkipV1OverlayFile(path: String, contentRoot: File): Boolean {
-            if (path == "js/rpg_core.js" || path == "js/libs/pixi.js") {
-                return isCustomDecrypterGame(contentRoot)
-            }
-            return false
-        }
-
         private fun buildRpgMvV1Overlay(manager: android.content.res.AssetManager, contentRoot: File? = null): Map<String, ByteArray> {
-            // v0 基准：定制游戏整包回退到游戏自带，避免 rpg_core.js 等 12 项任一覆盖丢定制
-            if (contentRoot != null && isCustomDecrypterGame(contentRoot)) {
-                Log.i(TAG, "v1 overlay skipped entirely (custom Decrypter game, keep all game js - v0 baseline)")
-                return emptyMap()
-            }
             val out = mutableMapOf<String, ByteArray>()
             // 3959930_1.19 的 MPTPShowforActor.js 为单游戏特例，已由 __nwjs_polyfill.js 的 Window 兼容运行时兜底，不在此无条件覆盖
             var missing = false
