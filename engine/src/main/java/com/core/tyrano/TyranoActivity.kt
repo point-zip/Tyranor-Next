@@ -217,7 +217,13 @@ class TyranoActivity : Activity() {
                     } else {
                         ""
                     }
-                    (base + compatExtra).toByteArray(Charsets.UTF_8)
+                    // v2-only: JoiPlay webgl/overrides/joiSaveAs shim (isolated to v2; v0/v1 unchanged)
+                    val v2Extra = if (isRpgMvV2 || isRpgMzV2) {
+                        runCatching { String(loadAsset(NWJS_POLYFILL_V2_EXTRA_ASSET), Charsets.UTF_8) }.getOrNull().orEmpty()
+                    } else {
+                        ""
+                    }
+                    (base + compatExtra + v2Extra).toByteArray(Charsets.UTF_8)
                 } catch (_: Exception) { ByteArray(0) }
             } else {
                 ByteArray(0)
@@ -1009,6 +1015,7 @@ class TyranoActivity : Activity() {
         private const val TOUCH_PAD_ASSET = "__touch_pad.js"
         private const val NWJS_POLYFILL_ASSET = "__nwjs_polyfill.js"
         private const val NWJS_POLYFILL_V1_EXTRA_ASSET = "__nwjs_polyfill_v1.js"
+        private const val NWJS_POLYFILL_V2_EXTRA_ASSET = "__nwjs_polyfill_v2.js"
         private const val RPG_MZ_CORE_HOOK_ASSET = "__hook_rmmz_core.js"
         private const val RPG_MZ_MANAGERS_HOOK_ASSET = "__hook_rmmz_managers.js"
         private const val JS_BRIDGE_NAME = "appJsInterface"
