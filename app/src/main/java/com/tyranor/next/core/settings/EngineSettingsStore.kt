@@ -136,6 +136,8 @@ object EngineSettingsStore {
     const val RPG_MZ_V0 = "v0"
     const val RPG_MV_V1 = "v1"
     const val RPG_MZ_V1 = "v1"
+    const val RPG_MV_V2 = "v2"
+    const val RPG_MZ_V2 = "v2"
     // 与 PerGameSettingsStore.F_RPG_* 同名，分属不同 prefs 文件（yukihub_prefs vs tyranor_game_overrides）
     // Ren'Py 版本取值常量
     const val RENPY_AUTO = "auto"
@@ -375,6 +377,7 @@ object EngineSettingsStore {
 
     private fun normalizeRpgVersion(v: String?): String = when (v?.trim()?.lowercase()) {
         RPG_MV_V1 -> RPG_MV_V1
+        RPG_MV_V2 -> RPG_MV_V2
         RPG_MV_V0 -> RPG_MV_V0
         else -> RPG_MV_V0
     }

@@ -21,4 +21,10 @@ class RpgVersionSettingsTest {
         assertEquals("rpg_mv_engine_version", PerGameSettingsStore.F_RPG_MV_VERSION)
         assertEquals("rpg_mz_engine_version", PerGameSettingsStore.F_RPG_MZ_VERSION)
     }
+
+    @Test
+    fun rpgV2ConstantsExist() {
+        assertEquals("v2", EngineSettingsStore.RPG_MV_V2)
+        assertEquals("v2", EngineSettingsStore.RPG_MZ_V2)
+    }
 }

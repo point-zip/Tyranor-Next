@@ -197,12 +197,14 @@ internal fun artPatchOptionsMap(): Map<String, String> = artPatchOptions().toMap
 internal fun rpgMvVersionOptions(): List<Pair<String, String>> = listOf(
     EngineSettingsStore.RPG_MV_V0 to stringResource(R.string.engine_option_rpg_mv_v0),
     EngineSettingsStore.RPG_MV_V1 to stringResource(R.string.engine_option_rpg_mv_v1),
+    EngineSettingsStore.RPG_MV_V2 to stringResource(R.string.engine_option_rpg_mv_v2),
 )
 
 @Composable
 internal fun rpgMzVersionOptions(): List<Pair<String, String>> = listOf(
     EngineSettingsStore.RPG_MZ_V0 to stringResource(R.string.engine_option_rpg_mz_v0),
     EngineSettingsStore.RPG_MZ_V1 to stringResource(R.string.engine_option_rpg_mz_v1),
+    EngineSettingsStore.RPG_MZ_V2 to stringResource(R.string.engine_option_rpg_mz_v2),
 )
 
 @Composable

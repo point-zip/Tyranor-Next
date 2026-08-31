@@ -200,38 +200,44 @@ class TyranoActivity : Activity() {
             val modHtml = if (rpgMakerModEnabled) buildRpgMakerModHtml() else ""
             val normalizedVersion = rpgMakerVersion?.trim()?.lowercase()
             val isRpgMvV1 = webGameType == WebGameType.RPG_MV && normalizedVersion == "v1"
+            // v2 = v1 的 NWJS 兼容层 + v0 的引擎文件策略（不覆盖核心脚本）
+            val isRpgMvV2 = webGameType == WebGameType.RPG_MV && normalizedVersion == "v2"
+            val isRpgMzV2 = webGameType == WebGameType.RPG_MZ && normalizedVersion == "v2"
+            val useV1NwjsCompat = isRpgMvV1 || isRpgMvV2 || isRpgMzV2
+            val useCoreScriptOverlay = isRpgMvV1
             if (webGameType == WebGameType.RPG_MZ && normalizedVersion == "v1") {
                 android.util.Log.i(TAG, "MZ v1 is placeholder, falling back to v0 resources")
             }
             val nwPolyfill = if (webGameType == WebGameType.RPG_MV || webGameType == WebGameType.RPG_MZ) {
                 try {
                     val base = String(loadAsset(NWJS_POLYFILL_ASSET), Charsets.UTF_8)
-                    // v1 专属兜底仅注入到 v1 会话，v0 保持与历史版本一致的注入内容
-                    val v1Only = if (isRpgMvV1) {
+                    // v1/v2 的 NWJS 兼容层兜底统一注入，v0 保持与历史版本一致的注入内容
+                    val compatExtra = if (useV1NwjsCompat) {
                         loadAsset(NWJS_POLYFILL_V1_EXTRA_ASSET).toString(Charsets.UTF_8)
                     } else {
                         ""
                     }
-                    (base + v1Only).toByteArray(Charsets.UTF_8)
+                    (base + compatExtra).toByteArray(Charsets.UTF_8)
                 } catch (_: Exception) { ByteArray(0) }
             } else {
                 ByteArray(0)
             }
             val isRpgWebGameForInject = webGameType == WebGameType.RPG_MV || webGameType == WebGameType.RPG_MZ
-            val v1Overlay: Map<String, ByteArray> = if (isRpgMvV1) {
+            val v1Overlay: Map<String, ByteArray> = if (useCoreScriptOverlay) {
                 buildRpgMvV1Overlay(assets)
             } else {
                 emptyMap()
             }
             val internalResources = modResources + v1Overlay
-            Log.i(TAG, "asset loaded ${hookAsset ?: "none"} bytes=${lateHook.size} early=${nwPolyfill.size} scriptAppends=${scriptAppends.keys} v1Overlay=${v1Overlay.keys} rpgMakerVersion=$rpgMakerVersion injectBeforeBody=${isRpgWebGameForInject}")
+            Log.i(TAG, "asset loaded ${hookAsset ?: "none"} bytes=${lateHook.size} early=${nwPolyfill.size} scriptAppends=${scriptAppends.keys} v1Overlay=${v1Overlay.keys} rpgMakerVersion=$rpgMakerVersion useV1NwjsCompat=$useV1NwjsCompat useCoreScriptOverlay=$useCoreScriptOverlay injectBeforeBody=${isRpgWebGameForInject}")
+            val rpgmEncryptedFallbacks = useV1NwjsCompat
             localServer = if (gameUsesAsar) {
                 TyranoLocalHttpServer(
-                    contentRoot, asarArchive, lateHook, isRpgWebGameForInject, scriptAppends, modHtml, internalResources, nwPolyfill, isRpgMvV1,
+                    contentRoot, asarArchive, lateHook, isRpgWebGameForInject, scriptAppends, modHtml, internalResources, nwPolyfill, rpgmEncryptedFallbacks,
                 )
             } else {
                 TyranoLocalHttpServer(
-                    contentRoot, lateHook, isRpgWebGameForInject, scriptAppends, modHtml, internalResources, nwPolyfill, isRpgMvV1,
+                    contentRoot, lateHook, isRpgWebGameForInject, scriptAppends, modHtml, internalResources, nwPolyfill, rpgmEncryptedFallbacks,
                 )
             }.also { it.start() }
         } catch (error: Throwable) {
