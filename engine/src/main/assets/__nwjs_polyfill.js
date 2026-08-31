@@ -212,11 +212,19 @@
             var data;
             if (enc) {
                 data = NWJSApi.readFileSync(path, enc);
-                if (data === "\b\b\b") throw new Error("readFileSync: Failed to read " + path);
+                if (data === "\b\b\b") {
+                    // Scene_Boot 期间抛错会被外层 rAF 包装链吞后置 _stopped，
+                    // 对缺文件返回空字符串让 ResourceHandler 走 _loadingCount 释放
+                    console.warn("[nw-polyfill] readFileSync miss (text): " + path);
+                    return "";
+                }
                 return data;
             } else {
                 data = NWJSApi.readFileSync(path, "");
-                if (data === "\b\b\b") throw new Error("readFileSync: Failed to read " + path);
+                if (data === "\b\b\b") {
+                    console.warn("[nw-polyfill] readFileSync miss (buffer): " + path);
+                    try { return Buffer.from([]); } catch (e) { return { _bin:"", length:0, toString:function(){return "";}}; }
+                }
                 try { return Buffer.from(JSON.parse(data)); } catch (e) { return Buffer.from(data); }
             }
         }

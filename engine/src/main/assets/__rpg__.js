@@ -1,4 +1,17 @@
 Graphics._createRenderer = function() {
+    // JoiPlay JoiMV.js:268 黑屏/闪烁修复 — 仅对 PIXI 4.x 生效
+    try {
+        if (typeof PIXI !== "undefined" && PIXI.VERSION && PIXI.VERSION.indexOf("4.") === 0) {
+            try { PIXI.settings.PRECISION_FRAGMENT = PIXI.PRECISION.HIGH; } catch (e) {}
+            try { PIXI.settings.PRECISION_VERTEX = PIXI.PRECISION.HIGH; } catch (e) {}
+            try { PIXI.settings.ROUND_PIXELS = true; } catch (e) {}
+            try { PIXI.settings.SPRITE_BATCH_SIZE = 2048; } catch (e) {}
+            try { PIXI.settings.WRAP_MODE = PIXI.WRAP_MODES.CLAMP; } catch (e) {}
+            try { PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST; } catch (e) {}
+            try { PIXI.settings.CAN_UPLOAD_SAME_BUFFER = false; } catch (e) {}
+        }
+    } catch (e2) {}
+
     PIXI.dontSayHello = true;
     var width = this._width;
     var height = this._height;

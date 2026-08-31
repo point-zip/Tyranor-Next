@@ -221,7 +221,7 @@ class TyranoActivity : Activity() {
             }
             val isRpgWebGameForInject = webGameType == WebGameType.RPG_MV || webGameType == WebGameType.RPG_MZ
             val v1Overlay: Map<String, ByteArray> = if (isRpgMvV1) {
-                buildRpgMvV1Overlay(assets)
+                buildRpgMvV1Overlay(assets, contentRoot)
             } else {
                 emptyMap()
             }
@@ -1142,11 +1142,33 @@ class TyranoActivity : Activity() {
         )
 
         // v1 覆盖：MV 1.6.1 核心（值契约来源：EngineSettingsStore.RPG_MV_V1 = "v1"）
-        private fun buildRpgMvV1Overlay(manager: android.content.res.AssetManager): Map<String, ByteArray> {
+        // 注意：Echoes 等定制 Decrypter 的游戏，其 js/rpg_core.js 包含 DrillUp 魔改解密；
+        // v1 覆盖 rpg_core.js 会冲掉定制解密导致黑屏，仅对这类游戏跳过 rpg_core.js 的覆盖。
+        private fun shouldSkipV1OverlayFile(path: String, contentRoot: File): Boolean {
+            if (path != "js/rpg_core.js") return false
+            return try {
+                val f = File(contentRoot, path)
+                if (!f.isFile) return false
+                // 检测 DrillUp 定制标记：code_map_drillup / f_drilLup 等
+                val head = f.inputStream().buffered().use { input ->
+                    val buf = ByteArray(64 * 1024)
+                    val n = input.read(buf)
+                    if (n <= 0) return false
+                    String(buf, 0, n, Charsets.UTF_8)
+                }
+                head.contains("code_map_drillup") || head.contains("f_drilLup") || head.contains("DrillUp")
+            } catch (_: Throwable) { false }
+        }
+
+        private fun buildRpgMvV1Overlay(manager: android.content.res.AssetManager, contentRoot: File? = null): Map<String, ByteArray> {
             val out = mutableMapOf<String, ByteArray>()
             // 3959930_1.19 的 MPTPShowforActor.js 为单游戏特例，已由 __nwjs_polyfill.js 的 Window 兼容运行时兜底，不在此无条件覆盖
             var missing = false
             for (path in RPG_MV_V1_FILES) {
+                if (contentRoot != null && shouldSkipV1OverlayFile(path, contentRoot)) {
+                    Log.i(TAG, "v1 overlay skipped for $path (custom Decrypter detected, keep game core)")
+                    continue
+                }
                 val assetPath = RPG_MV_V1_PREFIX + "/" + path
                 val bytes = runCatching { manager.open(assetPath).buffered().use { it.readBytes() } }.getOrNull()
                 if (bytes != null && bytes.isNotEmpty()) {

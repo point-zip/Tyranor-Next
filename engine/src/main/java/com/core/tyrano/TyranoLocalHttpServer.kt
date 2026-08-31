@@ -320,6 +320,63 @@ internal class TyranoLocalHttpServer(
         return String(out.toByteArray(), StandardCharsets.UTF_8)
     }
 
+    private fun maybeDecryptRpgMakerFile(file: File, requestedName: String): ByteArray? {
+        val lower = requestedName.lowercase(Locale.ROOT)
+        val isEncryptedFallback = (lower.endsWith(".png") && file.name.lowercase(Locale.ROOT).endsWith(".rpgmvp")) ||
+            (lower.endsWith(".ogg") && file.name.lowercase(Locale.ROOT).endsWith(".rpgmvo")) ||
+            (lower.endsWith(".m4a") && file.name.lowercase(Locale.ROOT).endsWith(".rpgmvo")) ||
+            file.name.lowercase(Locale.ROOT).endsWith(".rpgmvp") || file.name.lowercase(Locale.ROOT).endsWith(".rpgmvo")
+        if (!isEncryptedFallback) return null
+        // 仅当请求本身是明文扩展（png/ogg/m4a）但命中加密文件时才解密；直接请求 .rpgmvp 保持原样由 Decrypter 解
+        if (lower.endsWith(".rpgmvp") || lower.endsWith(".rpgmvo") || lower.endsWith(".rpgmvm")) return null
+        return try {
+            val raw = file.readBytes()
+            // 标准 RPG Maker MV 加密头：16 bytes (SIGNATURE+VER+REMAIN)，后接异或密文
+            if (raw.size <= 16) return null
+            val header = raw.copyOfRange(0, 16)
+            val sig = byteArrayOf(0x52, 0x50, 0x47, 0x4D, 0x56, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00)
+            var isEncrypted = true
+            for (i in 0 until 16) if (header[i] != sig[i]) { isEncrypted = false; break }
+            if (!isEncrypted) return null
+            val key = loadEncryptionKey() ?: return null
+            val body = raw.copyOfRange(16, raw.size)
+            // 仅解密首块（RPG Maker 标准：前 16-32KB 与 key 异或），避免大文件全量 xor 阻塞线程
+            val decryptLen = minOf(body.size, 32 * 1024)
+            for (i in 0 until decryptLen) {
+                body[i] = (body[i].toInt() xor key[i % key.size].toInt()).toByte()
+            }
+            // DrillUp 等魔改 Decrypter 在标准 xor 基础上叠加多轮置换；服务端仅做标准层，
+            // 剩余置换由游戏自带的 rpg_core.js Decrypter 在前端完成。标准层已足以让 PNG 头正确
+            body
+        } catch (_: Throwable) { null }
+    }
+
+    @Volatile private var cachedEncryptionKey: ByteArray? = null
+    @Volatile private var encryptionKeyLoaded: Boolean = false
+    private fun loadEncryptionKey(): ByteArray? {
+        if (encryptionKeyLoaded) return cachedEncryptionKey
+        synchronized(this) {
+            if (encryptionKeyLoaded) return cachedEncryptionKey
+            encryptionKeyLoaded = true
+            try {
+                val sysFile = File(root, "data/System.json")
+                val altFile = File(root, "www/data/System.json")
+                val f = when {
+                    sysFile.isFile -> sysFile
+                    altFile.isFile -> altFile
+                    else -> null
+                } ?: return null.also { cachedEncryptionKey = null }
+                val text = f.readText(StandardCharsets.UTF_8)
+                // 提取 "encryptionKey":"xxxx" 的 hex 串
+                val m = Regex("\"encryptionKey\"\\s*:\\s*\"([0-9a-fA-F]+)\"").find(text) ?: return null.also { cachedEncryptionKey = null }
+                val hex = m.groupValues[1]
+                val bytes = ByteArray(hex.length / 2) { i -> hex.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+                cachedEncryptionKey = bytes
+            } catch (_: Throwable) { cachedEncryptionKey = null }
+            return cachedEncryptionKey
+        }
+    }
+
     private fun sendFile(socket: Socket, file: File?, rangeHeader: String?, headOnly: Boolean) {
         if (file == null) { sendText(socket, 404, "Not Found", "file missing"); return }
         val fileLen = file.length()
@@ -345,6 +402,13 @@ internal class TyranoLocalHttpServer(
         } catch (_: Throwable) {
             start = 0; end = fileLen - 1; partial = false
         }
+        // 加密回退命中且为非 Range 请求时，尝试服务端预解密（明文直接返回，避免前端二次解密失败）
+        val decrypted = if (!partial && start == 0L) {
+            try { maybeDecryptRpgMakerFile(file, file.name) } catch (_: Throwable) { null }
+        } else null
+        // 统一用文件扩展名决定 MIME，但加密回退场景下用请求扩展名对应的 MIME 更合适
+        // 此处保持按 file.name 的 MIME；前端 Decrypter 已按 .png 分支，服务端预解密后 content 仍是 PNG/OGG 明文，MIME 保持原样不影响解码
+
         val len = Math.max(0, end - start + 1)
         val status = if (partial) "206 Partial Content" else "200 OK"
         val raw = BufferedOutputStream(socket.getOutputStream())
@@ -354,6 +418,14 @@ internal class TyranoLocalHttpServer(
         h.append("Content-Type: ").append(mime(file.name)).append("\r\n")
         h.append("Cache-Control: no-cache\r\n")
         h.append("Access-Control-Allow-Origin: *\r\n")
+        if (decrypted != null && !partial) {
+            h.append("Content-Length: ").append(decrypted.size).append("\r\n")
+            h.append("Connection: close\r\n\r\n")
+            raw.write(h.toString().toByteArray(StandardCharsets.UTF_8))
+            if (!headOnly) raw.write(decrypted)
+            raw.flush()
+            return
+        }
         h.append("Content-Length: ").append(len).append("\r\n")
         if (partial) h.append("Content-Range: bytes ").append(start).append('-').append(end).append('/').append(fileLen).append("\r\n")
         h.append("Connection: close\r\n\r\n")
