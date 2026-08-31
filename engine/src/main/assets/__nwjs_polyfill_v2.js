@@ -206,6 +206,26 @@
     // Scene_Map.create crashes on this._transfer = $gamePlayer.isTransferring().
     // Keep the fix in v2 (never in base/v1): rehydrate + guard transfer on read.
     (function () {
+        function toArrayIfNeeded(obj) {
+            if (!obj || typeof obj.filter === "function") return obj;
+            if (Array.isArray(obj)) return obj;
+            // JsonEx can produce plain object for sparse array: {0:..., 2:..., length?}
+            try {
+                var arr = [];
+                var max = -1;
+                for (var k in obj) {
+                    if (!obj.hasOwnProperty(k)) continue;
+                    var n = parseInt(k, 10);
+                    if (String(n) === k && n >= 0) {
+                        arr[n] = obj[k];
+                        if (n > max) max = n;
+                    }
+                }
+                // preserve length if present
+                if (typeof obj.length === "number" && obj.length > max + 1) arr.length = obj.length;
+                return arr;
+            } catch (e) { return []; }
+        }
         var timer = setInterval(function () {
             try {
                 if (typeof window.DataManager === "undefined" || typeof window.DataManager.extractSaveContents !== "function") return;
@@ -223,8 +243,25 @@
                                 }
                             } catch (e2) {}
                         }
-                        if (contents && contents.map && typeof contents.map.mapId !== "function" && typeof window.Game_Map !== "undefined") {
-                            try { Object.setPrototypeOf(contents.map, window.Game_Map.prototype); } catch (e3) {}
+                        if (contents && contents.map) {
+                            if (typeof contents.map.mapId !== "function" && typeof window.Game_Map !== "undefined") {
+                                try { Object.setPrototypeOf(contents.map, window.Game_Map.prototype); } catch (e3) {}
+                            }
+                            // _events is the array that later triggers "filter is not a function"
+                            try {
+                                if (contents.map._events && typeof contents.map._events.filter !== "function") {
+                                    contents.map._events = toArrayIfNeeded(contents.map._events);
+                                }
+                                // also rehydrate each Game_Event inside _events if needed
+                                if (contents.map._events && typeof window.Game_Event !== "undefined") {
+                                    for (var i = 0; i < contents.map._events.length; i++) {
+                                        var ev = contents.map._events[i];
+                                        if (ev && typeof ev.findProperPageIndex !== "function") {
+                                            try { Object.setPrototypeOf(ev, window.Game_Event.prototype); } catch (e4) {}
+                                        }
+                                    }
+                                }
+                            } catch (e5) {}
                         }
                     } catch (e) {}
                     return orig.call(this, contents);
@@ -234,6 +271,46 @@
             } catch (e4) {}
         }, 200);
         setTimeout(function () { try { clearInterval(timer); } catch (e) {} }, 10000);
+    })();
+
+    // Game_Map.events guard: _events can degrade to plain object after JsonEx decode
+    // across versions/plugins — same class of bug as isTransferring; keep in v2 only.
+    (function () {
+        var timerE = setInterval(function () {
+            try {
+                if (typeof window.Game_Map === "undefined" || typeof window.Game_Map.prototype.events !== "function") return;
+                if (window.Game_Map.prototype.events.__tyranorV2Patched) { clearInterval(timerE); return; }
+                var origEvents = window.Game_Map.prototype.events;
+                window.Game_Map.prototype.events = function () {
+                    try {
+                        if (!this._events || typeof this._events.filter !== "function") {
+                            // Coerce plain-object sparse array back to Array
+                            if (this._events && typeof this._events === "object" && !Array.isArray(this._events)) {
+                                var arr = [];
+                                var max = -1;
+                                for (var k in this._events) {
+                                    if (!this._events.hasOwnProperty(k)) continue;
+                                    var n = parseInt(k, 10);
+                                    if (String(n) === k && n >= 0) { arr[n] = this._events[k]; if (n > max) max = n; }
+                                }
+                                if (typeof this._events.length === "number" && this._events.length > max + 1) arr.length = this._events.length;
+                                this._events = arr;
+                            } else if (!this._events) {
+                                this._events = [];
+                            }
+                            if (typeof this._events.filter !== "function") return [];
+                        }
+                    } catch (e) { try { this._events = []; } catch (e2) {} return []; }
+                    try { return origEvents.call(this); } catch (e3) {
+                        console.warn("[nw-polyfill-v2] Game_Map.events degraded, returning []", e3 && e3.message);
+                        return [];
+                    }
+                };
+                window.Game_Map.prototype.events.__tyranorV2Patched = true;
+                clearInterval(timerE);
+            } catch (e4) {}
+        }, 200);
+        setTimeout(function () { try { clearInterval(timerE); } catch (e) {} }, 10000);
     })();
 
     // Scene_Map.create guard is the second line of defense if the save is genuinely truncated.
