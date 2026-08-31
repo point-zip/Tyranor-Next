@@ -1148,15 +1148,36 @@ class TyranoActivity : Activity() {
             if (path != "js/rpg_core.js") return false
             return try {
                 val f = File(contentRoot, path)
-                if (!f.isFile) return false
-                // 检测 DrillUp 定制标记：code_map_drillup / f_drilLup 等
-                val head = f.inputStream().buffered().use { input ->
-                    val buf = ByteArray(64 * 1024)
-                    val n = input.read(buf)
-                    if (n <= 0) return false
-                    String(buf, 0, n, Charsets.UTF_8)
+                if (!f.isFile) {
+                    // contentRoot 在 Echoes 场景下指向 .../www，尝试兼容大小写/嵌套
+                    val alt = File(contentRoot, "www/$path")
+                    if (!alt.isFile) return false
+                    return alt.inputStream().buffered().use { input ->
+                        val buf = ByteArray(64 * 1024)
+                        val n = input.read(buf)
+                        if (n <= 0) return false
+                        String(buf, 0, n, Charsets.UTF_8)
+                    }.contains("code_map_drillup")
                 }
-                head.contains("code_map_drillup") || head.contains("f_drilLup") || head.contains("DrillUp")
+                // DrillUp 标记在文件末尾（>200KB 处），需采样末尾
+                val len = f.length()
+                val sampleSize = minOf(128 * 1024L, len).toInt()
+                val buf = ByteArray(sampleSize)
+                java.io.RandomAccessFile(f, "r").use { raf ->
+                    raf.seek(maxOf(0L, len - sampleSize))
+                    val n = raf.read(buf)
+                    if (n <= 0) return false
+                    val tail = String(buf, 0, n, Charsets.UTF_8)
+                    // 同时采样头部（防小文件定制）
+                    val head = if (len > sampleSize) {
+                        f.inputStream().buffered().use { input ->
+                            val hb = ByteArray(64 * 1024)
+                            val hn = input.read(hb)
+                            if (hn > 0) String(hb, 0, hn, Charsets.UTF_8) else ""
+                        }
+                    } else tail
+                    (tail.contains("code_map_drillup") || tail.contains("Decrypter.code_map") || head.contains("code_map_drillup"))
+                }
             } catch (_: Throwable) { false }
         }
 
