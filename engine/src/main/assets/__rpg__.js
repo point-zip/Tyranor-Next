@@ -1,17 +1,6 @@
 Graphics._createRenderer = function() {
-    // JoiPlay JoiMV.js:268 黑屏/闪烁修复 — 仅对 PIXI 4.x 生效
-    try {
-        if (typeof PIXI !== "undefined" && PIXI.VERSION && PIXI.VERSION.indexOf("4.") === 0) {
-            try { PIXI.settings.PRECISION_FRAGMENT = PIXI.PRECISION.HIGH; } catch (e) {}
-            try { PIXI.settings.PRECISION_VERTEX = PIXI.PRECISION.HIGH; } catch (e) {}
-            try { PIXI.settings.ROUND_PIXELS = true; } catch (e) {}
-            try { PIXI.settings.SPRITE_BATCH_SIZE = 2048; } catch (e) {}
-            try { PIXI.settings.WRAP_MODE = PIXI.WRAP_MODES.CLAMP; } catch (e) {}
-            try { PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST; } catch (e) {}
-            try { PIXI.settings.CAN_UPLOAD_SAME_BUFFER = false; } catch (e) {}
-        }
-    } catch (e2) {}
-
+    // PIXI 4.x 黑屏修复已前移至 earlyHook (__nwjs_polyfill.js)，此处仅保留兜底，
+    // 确保晚于 earlyHook 定义的 Graphics 仍能补上（v0 基准下早钩已生效，此处等价空操作）
     PIXI.dontSayHello = true;
     var width = this._width;
     var height = this._height;

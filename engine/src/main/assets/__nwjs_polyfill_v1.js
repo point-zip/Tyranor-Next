@@ -71,6 +71,62 @@
         setTimeout(function () { try { clearInterval(pleTimer); } catch (e) {} }, 8000);
     })();
 
+    // v0 基准：游戏自带 js/rpg_core.js 等整套直跑，不做任何覆盖。
+    // v1 定制游戏的 _upperCanvas 创建时序与 1.6.1 不同，_clearUpperCanvas 在
+    // _upperCanvas 仍 null 时 getContext 会抛，直接杀死 Graphics.initialize。
+    // 轮询 200ms 会被游戏同步执行的 rpg_core.js 覆盖，需同步劫持 Object.defineProperty。
+    (function () {
+        var _pendingPatches = [];
+        function patchGraphicsNow(g) {
+            try {
+                if (g._clearUpperCanvas && !g._clearUpperCanvas.__tyranorGuarded) {
+                    var _origClear = g._clearUpperCanvas;
+                    g._clearUpperCanvas = function () {
+                        if (!this._upperCanvas || typeof this._upperCanvas.getContext !== "function") return;
+                        try { return _origClear.apply(this, arguments); } catch (e) { console.warn("[nw-polyfill-v1] _clearUpperCanvas suppressed:", e.message); }
+                    };
+                    g._clearUpperCanvas.__tyranorGuarded = true;
+                }
+                if (g._paintUpperCanvas && !g._paintUpperCanvas.__tyranorGuarded) {
+                    var _origPaint = g._paintUpperCanvas;
+                    g._paintUpperCanvas = function () {
+                        if (!this._upperCanvas) return;
+                        try { return _origPaint.apply(this, arguments); } catch (e) { console.warn("[nw-polyfill-v1] _paintUpperCanvas suppressed:", e.message); }
+                    };
+                    g._paintUpperCanvas.__tyranorGuarded = true;
+                }
+                // 同步补丁：若游戏覆写了 Graphics，立即重打
+                if (g._clearUpperCanvas && g._clearUpperCanvas.__tyranorGuarded) return true;
+            } catch (e) {}
+            return false;
+        }
+        // 同步劫持：游戏 rpg_core.js 同步定义 window.Graphics 时立即打补丁，不走轮询
+        try {
+            var _g = window.Graphics;
+            if (_g) patchGraphicsNow(_g);
+            Object.defineProperty(window, 'Graphics', {
+                configurable: true,
+                get: function () { return _g; },
+                set: function (v) {
+                    _g = v;
+                    try { if (v) patchGraphicsNow(v); } catch (e2) {}
+                    // 保留对 v 上已定义方法的即时补丁
+                    _pendingPatches.push(v);
+                }
+            });
+        } catch (e) {}
+        // 兜底轮询：处理 Object.defineProperty 失败的 WebView
+        var gcTimer2 = setInterval(function () {
+            try {
+                if (window.Graphics && patchGraphicsNow(window.Graphics)) clearInterval(gcTimer2);
+                for (var i = _pendingPatches.length - 1; i >= 0; i--) {
+                    if (_pendingPatches[i] && patchGraphicsNow(_pendingPatches[i])) _pendingPatches.splice(i, 1);
+                }
+            } catch (e2) {}
+        }, 50);
+        setTimeout(function () { try { clearInterval(gcTimer2); } catch (e) {} }, 12000);
+    })();
+
     // Boot 卡死强推：Scene_Boot 停留超过 15s 且加载条件（数据库+字体）均已满足时，
     // 直接 goto(Scene_Title)。条件与 Scene_Boot.isStartLoaded 完全一致，风险为：
     // 跳过游戏在 boot 阶段的自定义 start 逻辑（该游戏实测无额外逻辑）。

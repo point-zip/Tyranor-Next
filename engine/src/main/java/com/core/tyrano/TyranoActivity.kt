@@ -1142,46 +1142,54 @@ class TyranoActivity : Activity() {
         )
 
         // v1 覆盖：MV 1.6.1 核心（值契约来源：EngineSettingsStore.RPG_MV_V1 = "v1"）
-        // 注意：Echoes 等定制 Decrypter 的游戏，其 js/rpg_core.js 包含 DrillUp 魔改解密；
-        // v1 覆盖 rpg_core.js 会冲掉定制解密导致黑屏，仅对这类游戏跳过 rpg_core.js 的覆盖。
-        private fun shouldSkipV1OverlayFile(path: String, contentRoot: File): Boolean {
-            if (path != "js/rpg_core.js") return false
+        // v0 基准：rpgMakerVersion=v0 时完全不用覆盖，整套用游戏自带 js/。
+        // v1 覆盖 12 项是为修 3959930 等通用问题，但 Echoes 等定制 Decrypter/Pixi
+        // 被覆盖会丢 80+ 轮置换或把 Bitmap 的 2d 离屏 canvas 误劫。类级别判定：
+        // - 若游戏含任一定制特征（code_map_drillup / Decrypter.code_map），整包跳过 v1 覆盖（回退到 v0 基准），
+        //   保留游戏自带整套；其它 v1 游戏仍走 12 项覆盖。
+        private fun isCustomDecrypterGame(contentRoot: File): Boolean {
             return try {
-                val f = File(contentRoot, path)
-                if (!f.isFile) {
-                    // contentRoot 在 Echoes 场景下指向 .../www，尝试兼容大小写/嵌套
-                    val alt = File(contentRoot, "www/$path")
-                    if (!alt.isFile) return false
-                    return alt.inputStream().buffered().use { input ->
-                        val buf = ByteArray(64 * 1024)
-                        val n = input.read(buf)
-                        if (n <= 0) return false
-                        String(buf, 0, n, Charsets.UTF_8)
-                    }.contains("code_map_drillup")
-                }
-                // DrillUp 标记在文件末尾（>200KB 处），需采样末尾
+                val candidates = listOf(
+                    File(contentRoot, "js/rpg_core.js"),
+                    File(contentRoot, "www/js/rpg_core.js"),
+                    File(contentRoot.parentFile ?: contentRoot, "js/rpg_core.js"),
+                )
+                val f = candidates.firstOrNull { it.isFile } ?: return false
                 val len = f.length()
-                val sampleSize = minOf(128 * 1024L, len).toInt()
-                val buf = ByteArray(sampleSize)
-                java.io.RandomAccessFile(f, "r").use { raf ->
-                    raf.seek(maxOf(0L, len - sampleSize))
+                val tailSize = minOf(128 * 1024L, len).toInt()
+                val tail = java.io.RandomAccessFile(f, "r").use { raf ->
+                    raf.seek(maxOf(0L, len - tailSize))
+                    val buf = ByteArray(tailSize)
                     val n = raf.read(buf)
-                    if (n <= 0) return false
-                    val tail = String(buf, 0, n, Charsets.UTF_8)
-                    // 同时采样头部（防小文件定制）
-                    val head = if (len > sampleSize) {
-                        f.inputStream().buffered().use { input ->
-                            val hb = ByteArray(64 * 1024)
-                            val hn = input.read(hb)
-                            if (hn > 0) String(hb, 0, hn, Charsets.UTF_8) else ""
-                        }
-                    } else tail
-                    (tail.contains("code_map_drillup") || tail.contains("Decrypter.code_map") || head.contains("code_map_drillup"))
+                    if (n <= 0) "" else String(buf, 0, n, Charsets.UTF_8)
                 }
+                val head = if (len > tailSize) {
+                    f.inputStream().buffered().use { input ->
+                        val hb = ByteArray(64 * 1024)
+                        val hn = input.read(hb)
+                        if (hn > 0) String(hb, 0, hn, Charsets.UTF_8) else ""
+                    }
+                } else tail
+                val combined = tail + "\n" + head
+                combined.contains("code_map_drillup") || combined.contains("Decrypter.code_map") ||
+                    combined.contains("f_drilLup") || combined.contains("DrillUp")
             } catch (_: Throwable) { false }
         }
 
+        // 兼容旧名单：单项跳过（保留接口，内部走整包判定）
+        private fun shouldSkipV1OverlayFile(path: String, contentRoot: File): Boolean {
+            if (path == "js/rpg_core.js" || path == "js/libs/pixi.js") {
+                return isCustomDecrypterGame(contentRoot)
+            }
+            return false
+        }
+
         private fun buildRpgMvV1Overlay(manager: android.content.res.AssetManager, contentRoot: File? = null): Map<String, ByteArray> {
+            // v0 基准：定制游戏整包回退到游戏自带，避免 rpg_core.js 等 12 项任一覆盖丢定制
+            if (contentRoot != null && isCustomDecrypterGame(contentRoot)) {
+                Log.i(TAG, "v1 overlay skipped entirely (custom Decrypter game, keep all game js - v0 baseline)")
+                return emptyMap()
+            }
             val out = mutableMapOf<String, ByteArray>()
             // 3959930_1.19 的 MPTPShowforActor.js 为单游戏特例，已由 __nwjs_polyfill.js 的 Window 兼容运行时兜底，不在此无条件覆盖
             var missing = false

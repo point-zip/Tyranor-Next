@@ -155,6 +155,19 @@ internal class TyranoLocalHttpServer(
                 sendAppendedFile(socket, resolved.file!!, uri, method.equals("HEAD", true))
                 return
             }
+            // 加密回退命中（请求 .png/.ogg/.m4a 但实际文件是 .rpgmvp/.rpgmvo）时以请求 URI 为准解密
+            val isEncryptedFallback = uri.lowercase(Locale.ROOT).let { u ->
+                u.endsWith(".png") || u.endsWith(".ogg") || u.endsWith(".m4a")
+            } && resolved.file!!.name.lowercase(Locale.ROOT).let { n ->
+                n.endsWith(".rpgmvp") || n.endsWith(".rpgmvo") || n.endsWith(".rpgmvm")
+            }
+            if (isEncryptedFallback) {
+                val decrypted = try { maybeDecryptRpgMakerFile(resolved.file!!, uri) } catch (_: Throwable) { null }
+                if (decrypted != null) {
+                    sendBytes(socket, decrypted, uri, method.equals("HEAD", true))
+                    return
+                }
+            }
             sendFile(socket, resolved.file, headers["range"], method.equals("HEAD", true))
         } catch (t: Throwable) {
             if (isExpectedClientDisconnect(t)) {
@@ -402,12 +415,9 @@ internal class TyranoLocalHttpServer(
         } catch (_: Throwable) {
             start = 0; end = fileLen - 1; partial = false
         }
-        // 加密回退命中且为非 Range 请求时，尝试服务端预解密（明文直接返回，避免前端二次解密失败）
-        val decrypted = if (!partial && start == 0L) {
-            try { maybeDecryptRpgMakerFile(file, file.name) } catch (_: Throwable) { null }
-        } else null
-        // 统一用文件扩展名决定 MIME，但加密回退场景下用请求扩展名对应的 MIME 更合适
-        // 此处保持按 file.name 的 MIME；前端 Decrypter 已按 .png 分支，服务端预解密后 content 仍是 PNG/OGG 明文，MIME 保持原样不影响解码
+        // sendFile 的 file.name 已是 .rpgmvp 时判空会直接 return null，导致死代码；
+        // 真正的解密已在 handle() 层以 uri 为准完成，此处不再重复解密，直接返回原文件
+        val decrypted: ByteArray? = null
 
         val len = Math.max(0, end - start + 1)
         val status = if (partial) "206 Partial Content" else "200 OK"

@@ -606,5 +606,27 @@
         }
     } catch (e) {}
 
+    // v0 基准：游戏自带 js/ 整套直跑，仅在 earlyHook 对 PIXI 4.x 做类级别黑屏修复（JoiPlay JoiMV.js:268）。
+    // 必须在 earlyHook（</head>）完成，否则 lateHook 的 __rpg__.js 覆写 _createRenderer 时首帧已用旧配置创建。
+    (function () {
+        function applyPixiFix() {
+            try {
+                if (typeof PIXI === "undefined" || !PIXI.VERSION || PIXI.VERSION.indexOf("4.") !== 0) return false;
+                try { PIXI.settings.PRECISION_FRAGMENT = PIXI.PRECISION.HIGH; } catch (e) {}
+                try { PIXI.settings.PRECISION_VERTEX = PIXI.PRECISION.HIGH; } catch (e) {}
+                try { PIXI.settings.ROUND_PIXELS = true; } catch (e) {}
+                try { PIXI.settings.SPRITE_BATCH_SIZE = 2048; } catch (e) {}
+                try { PIXI.settings.WRAP_MODE = PIXI.WRAP_MODES.CLAMP; } catch (e) {}
+                try { PIXI.settings.SCALE_MODE = PIXI.SCALE_MODES.NEAREST; } catch (e) {}
+                try { PIXI.settings.CAN_UPLOAD_SAME_BUFFER = false; } catch (e) {}
+                return true;
+            } catch (e2) { return false; }
+        }
+        if (!applyPixiFix()) {
+            var pixiTimer = setInterval(function () { if (applyPixiFix()) clearInterval(pixiTimer); }, 50);
+            setTimeout(function () { try { clearInterval(pixiTimer); } catch (e) {} }, 5000);
+        }
+    })();
+
     console.log("[nw-polyfill] full installed (fs/path/os/util/events/child_process/crypto/url/nw.gui/Buffer/process) bridge=" + hasBridge());
 })();
