@@ -1,4 +1,6 @@
 Graphics._createRenderer = function() {
+    // PIXI 4.x 黑屏修复已前移至 earlyHook (__nwjs_polyfill.js)，此处仅保留兜底，
+    // 确保晚于 earlyHook 定义的 Graphics 仍能补上（v0 基准下早钩已生效，此处等价空操作）
     PIXI.dontSayHello = true;
     var width = this._width;
     var height = this._height;

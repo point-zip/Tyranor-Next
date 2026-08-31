@@ -203,23 +203,25 @@ class TyranoActivity : Activity() {
             if (webGameType == WebGameType.RPG_MZ && normalizedVersion == "v1") {
                 android.util.Log.i(TAG, "MZ v1 is placeholder, falling back to v0 resources")
             }
-            val nwPolyfill = if (webGameType == WebGameType.RPG_MV || webGameType == WebGameType.RPG_MZ) {
+            val nwPolyfill = if (webGameType == WebGameType.RPG_MV || webGameType == WebGameType.RPG_MZ || webGameType == WebGameType.WEB_OTHER) {
                 try {
                     val base = String(loadAsset(NWJS_POLYFILL_ASSET), Charsets.UTF_8)
+                    // WebGL 升级（JoiPlay webgl.js 移植）—— 必须在 polyfill 之后、v1 之前
+                    val webgl = try { String(loadAsset(NWJS_WEBGL_ASSET), Charsets.UTF_8) } catch (_: Exception) { "" }
                     // v1 专属兜底仅注入到 v1 会话，v0 保持与历史版本一致的注入内容
                     val v1Only = if (isRpgMvV1) {
                         loadAsset(NWJS_POLYFILL_V1_EXTRA_ASSET).toString(Charsets.UTF_8)
                     } else {
                         ""
                     }
-                    (base + v1Only).toByteArray(Charsets.UTF_8)
+                    (base + "\n" + webgl + "\n" + v1Only).toByteArray(Charsets.UTF_8)
                 } catch (_: Exception) { ByteArray(0) }
             } else {
                 ByteArray(0)
             }
             val isRpgWebGameForInject = webGameType == WebGameType.RPG_MV || webGameType == WebGameType.RPG_MZ
             val v1Overlay: Map<String, ByteArray> = if (isRpgMvV1) {
-                buildRpgMvV1Overlay(assets)
+                buildRpgMvV1Overlay(assets, contentRoot)
             } else {
                 emptyMap()
             }
@@ -262,6 +264,18 @@ class TyranoActivity : Activity() {
         setContentView(root)
 
         configureWebView(browser)
+        // NW.js 桥 — 对标 JoiPlay 的 NWJSApi（HTMLActivity.java:904）
+        // 仅对可能消费 Node/NW API 的游戏类型注册，注入顺序在 configure 之后、loadUrl 之前
+        run {
+            val needsNwBridge = webGameType == WebGameType.RPG_MV ||
+                webGameType == WebGameType.RPG_MZ ||
+                webGameType == WebGameType.WEB_OTHER
+            if (needsNwBridge) {
+                val nwBridge = NwJsBridge(this, contentRoot, saves)
+                browser.addJavascriptInterface(nwBridge, NwJsBridge.JS_NAME)
+                Log.i(TAG, "NWJSApi bridge registered for ${webGameType.intentValue} root=${contentRoot.absolutePath}")
+            }
+        }
         when (webGameType) {
             WebGameType.RPG_MV, WebGameType.RPG_MZ -> {
                 browser.addJavascriptInterface(RpgMakerSaveBridge(saves), RPG_MAKER_SAVE_BRIDGE_NAME)
@@ -437,7 +451,10 @@ class TyranoActivity : Activity() {
         }
         runCatching { android.webkit.WebView.setWebContentsDebuggingEnabled(true) }
         browser.settings.apply {
-            userAgentString = "$userAgentString;tyranoplayer-android-1.0;yukihub-internal-tyrano"
+            // JoiPlay UA 伪装：桌面 Chrome/80 + NWjs/0.32.0，骗过游戏的 NW.js 检测
+            val baseUa = userAgentString
+            val nwSuffix = " NWjs/0.32.0 Chrome/80.0.3987.87"
+            userAgentString = if (baseUa.contains("NWjs")) baseUa else baseUa + nwSuffix + ";tyranoplayer-android-1.0;yukihub-internal-tyrano"
             javaScriptEnabled = true
             allowContentAccess = false
             allowFileAccess = false
@@ -1010,12 +1027,13 @@ class TyranoActivity : Activity() {
     companion object {
         private const val TAG = "YukiTyrano"
         /** 诊断用构建标识：日志中出现该值即可确认设备运行的是哪一版代码 */
-        private const val BUILD_TAG = "v1iso-20260830"
+        private const val BUILD_TAG = "nwjs-port-20260831"
         private const val TYRANO_HOOK_ASSET = "__tyrano__.js"
         private const val RPG_MV_HOOK_ASSET = "__rpg__.js"
         private const val RPG_MZ_HOOK_ASSET = "__rmmz__.js"
         private const val TOUCH_PAD_ASSET = "__touch_pad.js"
         private const val NWJS_POLYFILL_ASSET = "__nwjs_polyfill.js"
+        private const val NWJS_WEBGL_ASSET = "__nwjs_webgl.js"
         private const val NWJS_POLYFILL_V1_EXTRA_ASSET = "__nwjs_polyfill_v1.js"
         private const val RPG_MZ_CORE_HOOK_ASSET = "__hook_rmmz_core.js"
         private const val RPG_MZ_MANAGERS_HOOK_ASSET = "__hook_rmmz_managers.js"
@@ -1124,11 +1142,47 @@ class TyranoActivity : Activity() {
         )
 
         // v1 覆盖：MV 1.6.1 核心（值契约来源：EngineSettingsStore.RPG_MV_V1 = "v1"）
-        private fun buildRpgMvV1Overlay(manager: android.content.res.AssetManager): Map<String, ByteArray> {
+        // v0 基准是游戏自带整套直跑，仅做补丁不做整文件替换。
+        // 按文件特征单项跳过，不做整包回退：定制 rpg_core.js 保留游戏解密，其余仍走 v1 通用修复。
+        private fun shouldSkipV1OverlayFile(path: String, contentRoot: File): Boolean {
+            if (path != "js/rpg_core.js") return false
+            return try {
+                val candidates = listOf(
+                    File(contentRoot, path),
+                    File(contentRoot, "www/$path"),
+                    File(contentRoot.parentFile ?: contentRoot, path),
+                )
+                val f = candidates.firstOrNull { it.isFile } ?: return false
+                val len = f.length()
+                val tailSize = minOf(128 * 1024L, len).toInt()
+                val tail = java.io.RandomAccessFile(f, "r").use { raf ->
+                    raf.seek(maxOf(0L, len - tailSize))
+                    val buf = ByteArray(tailSize)
+                    val n = raf.read(buf)
+                    if (n <= 0) "" else String(buf, 0, n, Charsets.UTF_8)
+                }
+                val head = if (len > tailSize) {
+                    f.inputStream().buffered().use { input ->
+                        val hb = ByteArray(64 * 1024)
+                        val hn = input.read(hb)
+                        if (hn > 0) String(hb, 0, hn, Charsets.UTF_8) else ""
+                    }
+                } else tail
+                val combined = tail + "\n" + head
+                combined.contains("code_map_drillup") || combined.contains("Decrypter.code_map") ||
+                    combined.contains("f_drilLup") || combined.contains("DrillUp")
+            } catch (_: Throwable) { false }
+        }
+
+        private fun buildRpgMvV1Overlay(manager: android.content.res.AssetManager, contentRoot: File? = null): Map<String, ByteArray> {
             val out = mutableMapOf<String, ByteArray>()
             // 3959930_1.19 的 MPTPShowforActor.js 为单游戏特例，已由 __nwjs_polyfill.js 的 Window 兼容运行时兜底，不在此无条件覆盖
             var missing = false
             for (path in RPG_MV_V1_FILES) {
+                if (contentRoot != null && shouldSkipV1OverlayFile(path, contentRoot)) {
+                    Log.i(TAG, "v1 overlay skipped for $path (custom Decrypter detected, keep game core)")
+                    continue
+                }
                 val assetPath = RPG_MV_V1_PREFIX + "/" + path
                 val bytes = runCatching { manager.open(assetPath).buffered().use { it.readBytes() } }.getOrNull()
                 if (bytes != null && bytes.isNotEmpty()) {
