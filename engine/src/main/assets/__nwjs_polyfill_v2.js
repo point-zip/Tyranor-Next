@@ -296,6 +296,14 @@
                                 if (contents.player && contents.player._followers && contents.player._followers._data && typeof contents.player._followers._data.forEach !== "function") {
                                     contents.player._followers._data = toArrayIfNeeded(contents.player._followers._data);
                                 }
+                                // Game_Followers itself may degrade to plain object (reverseEach undefined)
+                                if (contents.player && contents.player._followers && typeof contents.player._followers.reverseEach !== "function" && typeof window.Game_Followers !== "undefined") {
+                                    try { Object.setPrototypeOf(contents.player._followers, window.Game_Followers.prototype); } catch (e11) {}
+                                    // ensure inner _data is array after proto restore
+                                    if (contents.player._followers._data && typeof contents.player._followers._data.forEach !== "function") {
+                                        try { contents.player._followers._data = toArrayIfNeeded(contents.player._followers._data); } catch (e12) {}
+                                    }
+                                }
                                 // Ensure $gameMap internals stay arrays even when accessed via $gameMap directly
                                 if (contents.map._interpreter && typeof contents.map._interpreter.setup !== "function" && typeof window.Game_Interpreter !== "undefined") {
                                     try { Object.setPrototypeOf(contents.map._interpreter, window.Game_Interpreter.prototype); } catch (e9) {}
@@ -373,17 +381,79 @@
                     };
                     window.Game_Map.prototype.refereshVehicles.__tyranorV2Patched = true;
                 }
+                // $gamePlayer.followers().reverseEach — followers._data sparse
+                if (typeof window.Game_Followers !== "undefined" && typeof window.Game_Followers.prototype.reverseEach === "function" && !window.Game_Followers.prototype.reverseEach.__tyranorV2Patched) {
+                    var origReverseEach = window.Game_Followers.prototype.reverseEach;
+                    window.Game_Followers.prototype.reverseEach = function (cb, thisObject) {
+                        try { coerceSparseArray(this, "_data"); } catch (e9) {}
+                        if (!this._data || typeof this._data.forEach !== "function") {
+                            console.warn("[nw-polyfill-v2] followers _data degraded, skipping reverseEach");
+                            return;
+                        }
+                        try { return origReverseEach.call(this, cb, thisObject); } catch (e10) {
+                            console.warn("[nw-polyfill-v2] followers reverseEach degraded", e10 && e10.message);
+                        }
+                    };
+                    window.Game_Followers.prototype.reverseEach.__tyranorV2Patched = true;
+                }
+                if (typeof window.Game_Followers !== "undefined" && typeof window.Game_Followers.prototype.forEach === "function" && !window.Game_Followers.prototype.forEach.__tyranorV2Patched) {
+                    var origFollowersForEach = window.Game_Followers.prototype.forEach;
+                    window.Game_Followers.prototype.forEach = function (cb, thisObject) {
+                        try { coerceSparseArray(this, "_data"); } catch (e11) {}
+                        if (!this._data || typeof this._data.forEach !== "function") return;
+                        try { return origFollowersForEach.call(this, cb, thisObject); } catch (e12) {
+                            console.warn("[nw-polyfill-v2] followers forEach degraded", e12 && e12.message);
+                        }
+                    };
+                    window.Game_Followers.prototype.forEach.__tyranorV2Patched = true;
+                }
+                // Spriteset_Map.createCharacters also calls followers.reverseEach — guard there too
+                if (typeof window.Spriteset_Map !== "undefined" && typeof window.Spriteset_Map.prototype.createCharacters === "function" && !window.Spriteset_Map.prototype.createCharacters.__tyranorV2Patched) {
+                    var origCreateChars = window.Spriteset_Map.prototype.createCharacters;
+                    window.Spriteset_Map.prototype.createCharacters = function () {
+                        try {
+                            if (typeof $gamePlayer !== "undefined" && $gamePlayer && typeof $gamePlayer.followers === "function") {
+                                var f = $gamePlayer.followers();
+                                if (f && f._data && typeof f._data.forEach !== "function") {
+                                    try { coerceSparseArray(f, "_data"); } catch (e13) {}
+                                }
+                                if (f && typeof f.reverseEach !== "function" && typeof window.Game_Followers !== "undefined") {
+                                    try { Object.setPrototypeOf(f, window.Game_Followers.prototype); } catch (e14) {}
+                                }
+                            }
+                        } catch (e15) {}
+                        try { return origCreateChars.call(this); } catch (e16) {
+                            if (e16 && e16.message && e16.message.indexOf("reverseEach") !== -1) {
+                                console.warn("[nw-polyfill-v2] Spriteset_Map.createCharacters degraded, falling back", e16.message);
+                                try {
+                                    this._characterSprites = [];
+                                    if ($gameMap && typeof $gameMap.events === "function") {
+                                        $gameMap.events().forEach(function (ev) { this._characterSprites.push(new Sprite_Character(ev)); }, this);
+                                    }
+                                    if ($gameMap && typeof $gameMap.vehicles === "function") {
+                                        $gameMap.vehicles().forEach(function (v) { this._characterSprites.push(new Sprite_Character(v)); }, this);
+                                    }
+                                    this._characterSprites.push(new Sprite_Character($gamePlayer));
+                                    for (var i = 0; i < this._characterSprites.length; i++) this._tilemap.addChild(this._characterSprites[i]);
+                                    return;
+                                } catch (e17) {}
+                            }
+                            throw e16;
+                        }
+                    };
+                    window.Spriteset_Map.prototype.createCharacters.__tyranorV2Patched = true;
+                }
                 // Game_Screen._pictures.forEach — same degradation as _events
                 if (typeof window.Game_Screen !== "undefined" && typeof window.Game_Screen.prototype.update === "function" && !window.Game_Screen.prototype.update.__tyranorV2Patched) {
                     var origScreenUpdate = window.Game_Screen.prototype.update;
                     window.Game_Screen.prototype.update = function () {
-                        try { coerceSparseArray(this, "_pictures"); } catch (e9) {}
-                        try { return origScreenUpdate.apply(this, arguments); } catch (e10) {
-                            if (e10 && e10.message && e10.message.indexOf("forEach is not a function") !== -1) {
+                        try { coerceSparseArray(this, "_pictures"); } catch (e17) {}
+                        try { return origScreenUpdate.apply(this, arguments); } catch (e18) {
+                            if (e18 && e18.message && e18.message.indexOf("forEach is not a function") !== -1) {
                                 console.warn("[nw-polyfill-v2] _pictures degraded, coercing and retrying");
-                                try { coerceSparseArray(this, "_pictures"); return origScreenUpdate.apply(this, arguments); } catch (e11) { return; }
+                                try { coerceSparseArray(this, "_pictures"); return origScreenUpdate.apply(this, arguments); } catch (e19) { return; }
                             }
-                            throw e10;
+                            throw e18;
                         }
                     };
                     window.Game_Screen.prototype.update.__tyranorV2Patched = true;
