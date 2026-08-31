@@ -262,6 +262,26 @@
                                     }
                                 }
                             } catch (e5) {}
+                            // _vehicles shares the same sparse-array degradation path as _events
+                            try {
+                                if (contents.map._vehicles && typeof contents.map._vehicles.forEach !== "function") {
+                                    contents.map._vehicles = toArrayIfNeeded(contents.map._vehicles);
+                                }
+                                if (contents.map._vehicles && typeof window.Game_Vehicle !== "undefined") {
+                                    for (var vi = 0; vi < contents.map._vehicles.length; vi++) {
+                                        var ve = contents.map._vehicles[vi];
+                                        if (ve && typeof ve.isAirship !== "function") {
+                                            try { Object.setPrototypeOf(ve, window.Game_Vehicle.prototype); } catch (e6) {}
+                                        }
+                                    }
+                                }
+                            } catch (e7) {}
+                            // _commonEvents in the same save slot can also degrade
+                            try {
+                                if (contents.map._commonEvents && typeof contents.map._commonEvents.forEach !== "function") {
+                                    contents.map._commonEvents = toArrayIfNeeded(contents.map._commonEvents);
+                                }
+                            } catch (e8) {}
                         }
                     } catch (e) {}
                     return orig.call(this, contents);
@@ -273,31 +293,34 @@
         setTimeout(function () { try { clearInterval(timer); } catch (e) {} }, 10000);
     })();
 
-    // Game_Map.events guard: _events can degrade to plain object after JsonEx decode
-    // across versions/plugins — same class of bug as isTransferring; keep in v2 only.
+    // Game_Map.events / vehicles guard: sparse arrays can degrade to plain objects
+    // after JsonEx decode — same class of bug as isTransferring; keep in v2 only.
     (function () {
         var timerE = setInterval(function () {
             try {
                 if (typeof window.Game_Map === "undefined" || typeof window.Game_Map.prototype.events !== "function") return;
                 if (window.Game_Map.prototype.events.__tyranorV2Patched) { clearInterval(timerE); return; }
                 var origEvents = window.Game_Map.prototype.events;
+                function coerceSparseArray(holder, key) {
+                    var v = holder[key];
+                    if (v && typeof v === "object" && !Array.isArray(v) && typeof v.filter !== "function" && typeof v.forEach !== "function") {
+                        var arr = [];
+                        var max = -1;
+                        for (var k in v) {
+                            if (!v.hasOwnProperty(k)) continue;
+                            var n = parseInt(k, 10);
+                            if (String(n) === k && n >= 0) { arr[n] = v[k]; if (n > max) max = n; }
+                        }
+                        if (typeof v.length === "number" && v.length > max + 1) arr.length = v.length;
+                        holder[key] = arr;
+                    } else if (!v) {
+                        holder[key] = [];
+                    }
+                }
                 window.Game_Map.prototype.events = function () {
                     try {
                         if (!this._events || typeof this._events.filter !== "function") {
-                            // Coerce plain-object sparse array back to Array
-                            if (this._events && typeof this._events === "object" && !Array.isArray(this._events)) {
-                                var arr = [];
-                                var max = -1;
-                                for (var k in this._events) {
-                                    if (!this._events.hasOwnProperty(k)) continue;
-                                    var n = parseInt(k, 10);
-                                    if (String(n) === k && n >= 0) { arr[n] = this._events[k]; if (n > max) max = n; }
-                                }
-                                if (typeof this._events.length === "number" && this._events.length > max + 1) arr.length = this._events.length;
-                                this._events = arr;
-                            } else if (!this._events) {
-                                this._events = [];
-                            }
+                            coerceSparseArray(this, "_events");
                             if (typeof this._events.filter !== "function") return [];
                         }
                     } catch (e) { try { this._events = []; } catch (e2) {} return []; }
@@ -307,6 +330,30 @@
                     }
                 };
                 window.Game_Map.prototype.events.__tyranorV2Patched = true;
+                // vehicles() / refereshVehicles() share the same sparse-array slot
+                if (typeof window.Game_Map.prototype.vehicles === "function" && !window.Game_Map.prototype.vehicles.__tyranorV2Patched) {
+                    var origVehicles = window.Game_Map.prototype.vehicles;
+                    window.Game_Map.prototype.vehicles = function () {
+                        try { coerceSparseArray(this, "_vehicles"); } catch (e5) {}
+                        try { return origVehicles.call(this); } catch (e6) { return this._vehicles && Array.isArray(this._vehicles) ? this._vehicles : []; }
+                    };
+                    window.Game_Map.prototype.vehicles.__tyranorV2Patched = true;
+                }
+                if (typeof window.Game_Map.prototype.refereshVehicles === "function" && !window.Game_Map.prototype.refereshVehicles.__tyranorV2Patched) {
+                    var origRefreshVehicles = window.Game_Map.prototype.refereshVehicles;
+                    window.Game_Map.prototype.refereshVehicles = function () {
+                        try { coerceSparseArray(this, "_vehicles"); } catch (e7) {}
+                        var arr = this._vehicles;
+                        if (!arr || typeof arr.forEach !== "function") {
+                            console.warn("[nw-polyfill-v2] _vehicles degraded, skipping refereshVehicles");
+                            return;
+                        }
+                        try { return origRefreshVehicles.call(this); } catch (e8) {
+                            console.warn("[nw-polyfill-v2] refereshVehicles degraded", e8 && e8.message);
+                        }
+                    };
+                    window.Game_Map.prototype.refereshVehicles.__tyranorV2Patched = true;
+                }
                 clearInterval(timerE);
             } catch (e4) {}
         }, 200);
