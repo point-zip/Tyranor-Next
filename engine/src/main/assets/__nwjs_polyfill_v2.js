@@ -282,6 +282,25 @@
                                     contents.map._commonEvents = toArrayIfNeeded(contents.map._commonEvents);
                                 }
                             } catch (e8) {}
+                            // Generic sweep: other sparse arrays in the same save (screen/actors/followers)
+                            try {
+                                // Game_Screen._pictures: 1..100 sparse, hit as _pictures.forEach
+                                if (contents.screen && contents.screen._pictures && typeof contents.screen._pictures.forEach !== "function") {
+                                    contents.screen._pictures = toArrayIfNeeded(contents.screen._pictures);
+                                }
+                                // Game_Actors._data: actorId holes
+                                if (contents.actors && contents.actors._data && typeof contents.actors._data.filter !== "function") {
+                                    contents.actors._data = toArrayIfNeeded(contents.actors._data);
+                                }
+                                // Game_Player._followers._data is nested inside player
+                                if (contents.player && contents.player._followers && contents.player._followers._data && typeof contents.player._followers._data.forEach !== "function") {
+                                    contents.player._followers._data = toArrayIfNeeded(contents.player._followers._data);
+                                }
+                                // Ensure $gameMap internals stay arrays even when accessed via $gameMap directly
+                                if (contents.map._interpreter && typeof contents.map._interpreter.setup !== "function" && typeof window.Game_Interpreter !== "undefined") {
+                                    try { Object.setPrototypeOf(contents.map._interpreter, window.Game_Interpreter.prototype); } catch (e9) {}
+                                }
+                            } catch (e10) {}
                         }
                     } catch (e) {}
                     return orig.call(this, contents);
@@ -353,6 +372,21 @@
                         }
                     };
                     window.Game_Map.prototype.refereshVehicles.__tyranorV2Patched = true;
+                }
+                // Game_Screen._pictures.forEach — same degradation as _events
+                if (typeof window.Game_Screen !== "undefined" && typeof window.Game_Screen.prototype.update === "function" && !window.Game_Screen.prototype.update.__tyranorV2Patched) {
+                    var origScreenUpdate = window.Game_Screen.prototype.update;
+                    window.Game_Screen.prototype.update = function () {
+                        try { coerceSparseArray(this, "_pictures"); } catch (e9) {}
+                        try { return origScreenUpdate.apply(this, arguments); } catch (e10) {
+                            if (e10 && e10.message && e10.message.indexOf("forEach is not a function") !== -1) {
+                                console.warn("[nw-polyfill-v2] _pictures degraded, coercing and retrying");
+                                try { coerceSparseArray(this, "_pictures"); return origScreenUpdate.apply(this, arguments); } catch (e11) { return; }
+                            }
+                            throw e10;
+                        }
+                    };
+                    window.Game_Screen.prototype.update.__tyranorV2Patched = true;
                 }
                 clearInterval(timerE);
             } catch (e4) {}
