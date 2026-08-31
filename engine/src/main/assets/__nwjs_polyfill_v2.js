@@ -304,6 +304,14 @@
                                         try { contents.player._followers._data = toArrayIfNeeded(contents.player._followers._data); } catch (e12) {}
                                     }
                                 }
+                                // VisibleFollowers / areGathered path reads _data.filter etc.
+                                if (contents.player && contents.player._followers && contents.player._followers._data) {
+                                    try {
+                                        if (typeof contents.player._followers._data.filter !== "function") {
+                                            contents.player._followers._data = toArrayIfNeeded(contents.player._followers._data);
+                                        }
+                                    } catch (e13) {}
+                                }
                                 // Ensure $gameMap internals stay arrays even when accessed via $gameMap directly
                                 if (contents.map._interpreter && typeof contents.map._interpreter.setup !== "function" && typeof window.Game_Interpreter !== "undefined") {
                                     try { Object.setPrototypeOf(contents.map._interpreter, window.Game_Interpreter.prototype); } catch (e9) {}
@@ -381,12 +389,30 @@
                     };
                     window.Game_Map.prototype.refereshVehicles.__tyranorV2Patched = true;
                 }
+                function ensureFollowersData(host) {
+                    if (!host) return;
+                    var f = null;
+                    try { f = typeof host.followers === "function" ? host.followers() : host._followers; } catch (e) { f = host._followers; }
+                    if (!f) {
+                        if (typeof window.Game_Followers !== "undefined") {
+                            try { host._followers = new window.Game_Followers(); f = host._followers; } catch (e2) { return; }
+                        } else return;
+                    }
+                    if (typeof f.reverseEach !== "function" && typeof window.Game_Followers !== "undefined") {
+                        try { Object.setPrototypeOf(f, window.Game_Followers.prototype); } catch (e3) {}
+                    }
+                    if (!f._data || typeof f._data.forEach !== "function") {
+                        try { coerceSparseArray(f, "_data"); } catch (e4) {}
+                    }
+                    if (!f._data) { try { f._data = []; } catch (e5) {} }
+                }
                 // $gamePlayer.followers().reverseEach — followers._data sparse
                 if (typeof window.Game_Followers !== "undefined" && typeof window.Game_Followers.prototype.reverseEach === "function" && !window.Game_Followers.prototype.reverseEach.__tyranorV2Patched) {
                     var origReverseEach = window.Game_Followers.prototype.reverseEach;
                     window.Game_Followers.prototype.reverseEach = function (cb, thisObject) {
-                        try { coerceSparseArray(this, "_data"); } catch (e9) {}
-                        if (!this._data || typeof this._data.forEach !== "function") {
+                        try { if (!this._data || typeof this._data.forEach !== "function") coerceSparseArray(this, "_data"); } catch (e9) {}
+                        if (!this._data) { try { this._data = []; } catch (e0) {} }
+                        if (typeof this._data.forEach !== "function") {
                             console.warn("[nw-polyfill-v2] followers _data degraded, skipping reverseEach");
                             return;
                         }
@@ -399,13 +425,27 @@
                 if (typeof window.Game_Followers !== "undefined" && typeof window.Game_Followers.prototype.forEach === "function" && !window.Game_Followers.prototype.forEach.__tyranorV2Patched) {
                     var origFollowersForEach = window.Game_Followers.prototype.forEach;
                     window.Game_Followers.prototype.forEach = function (cb, thisObject) {
-                        try { coerceSparseArray(this, "_data"); } catch (e11) {}
-                        if (!this._data || typeof this._data.forEach !== "function") return;
+                        try { if (!this._data || typeof this._data.forEach !== "function") coerceSparseArray(this, "_data"); } catch (e11) {}
+                        if (!this._data) { try { this._data = []; } catch (e00) {} }
+                        if (typeof this._data.forEach !== "function") return;
                         try { return origFollowersForEach.call(this, cb, thisObject); } catch (e12) {
                             console.warn("[nw-polyfill-v2] followers forEach degraded", e12 && e12.message);
                         }
                     };
                     window.Game_Followers.prototype.forEach.__tyranorV2Patched = true;
+                }
+                if (typeof window.Game_Player === "undefined" || typeof window.Game_Player.prototype.followers !== "function" || window.Game_Player.prototype.followers.__tyranorV2Patched) {
+                    // hook below still needs ensureFollowersData even if followers() itself not patched
+                } else {
+                    var origPlayerFollowers = window.Game_Player.prototype.followers;
+                    window.Game_Player.prototype.followers = function () {
+                        try { ensureFollowersData(this); } catch (e15) {}
+                        try { return origPlayerFollowers.call(this); } catch (e16) {
+                            try { ensureFollowersData(this); } catch (e17) {}
+                            return this._followers;
+                        }
+                    };
+                    window.Game_Player.prototype.followers.__tyranorV2Patched = true;
                 }
                 // Spriteset_Map.createCharacters also calls followers.reverseEach — guard there too
                 if (typeof window.Spriteset_Map !== "undefined" && typeof window.Spriteset_Map.prototype.createCharacters === "function" && !window.Spriteset_Map.prototype.createCharacters.__tyranorV2Patched) {
