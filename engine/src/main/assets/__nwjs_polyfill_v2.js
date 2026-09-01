@@ -27,10 +27,20 @@
     } catch (e) {}
 
     // ---- WebGL1-on-WebGL2 shim (verbatim port of JoiPlay webgl.js, no Java bridge dependency) ----
+    // 修复：Tyranor 无 NWJSApi，JoiPlay 原版靠 isTranspileEnabled() 门控；
+    // 无门控裸奔会导致 isTranspiling 全局泄漏 + getQueryParameter 未定义 +
+    // bindTexture 强制改参数，所有 v2 游戏开局卡死。此处加等效门控：
+    // 仅当 WebGL1 上下文不存在且 NWJSApi 提供 transpile 能力时才劫持，
+    // 否则整段跳过保持原生 WebGL 行为。
     (function () {
         var hasWebGL2Canvas;
         try { hasWebGL2Canvas = !!(document.createElement("canvas").getContext("webgl2")); } catch (e) { hasWebGL2Canvas = false; }
         if (!hasWebGL2Canvas) return;
+        var hasJoiTranspile = (typeof window.NWJSApi !== "undefined" &&
+            typeof NWJSApi.isTranspileEnabled === "function" && NWJSApi.isTranspileEnabled()) ||
+            (typeof window.NWJSApi !== "undefined" && typeof NWJSApi.transpileToGLSL3 === "function");
+        // Tyranor 无 NWJSApi：不劫持，保持原生 WebGL2 路径（Pixi 4.0.3 直接可用）
+        if (!hasJoiTranspile) return;
 
         function WebGLDummyExtension(gl) {
             this.gl = gl;
@@ -155,7 +165,9 @@
                     var cpext = {
                         ...ext,
                         getQueryObject: function(...args){
-                            getQueryParameter(args);
+                            // 原 JoiPlay 调用未定义的 getQueryParameter；改为经 ext.getQueryParameter 转发
+                            try { if (ext && typeof ext.getQueryParameter === "function") return ext.getQueryParameter.apply(ext, args); } catch (e4) {}
+                            return null;
                         }
                     }
                     return cpext;

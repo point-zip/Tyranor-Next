@@ -50,10 +50,7 @@ Graphics._createRenderer = function() {
         console.log(typeof this._renderer);
 
     } catch (e) {
-        // WebGL 初始化失败时回退 Canvas（旧设备/驱动兼容），避免黑屏
-        // 注：默认走 WebGL（shouldUseCanvasRenderer=false），Canvas 仅作兜底
-        console.warn("Renderer init failed, falling back to Canvas: " + e);
-        try { this._renderer = new PIXI.CanvasRenderer(width, height, options); } catch (e2) { this._renderer = null; }
+        this._renderer = null;
     }
 };
 
@@ -183,6 +180,6 @@ StorageManager.cleanWebStorageBackup = function(savefileId) {
     var bak = this.webStorageKey(savefileId) + "bak";
     try { window.saveDataManager.Remove(bak); } catch (e) { try { localStorage.removeItem(bak); } catch (e2) {} }
 };
-SceneManager.shouldUseCanvasRenderer = function() {return false;};
+SceneManager.shouldUseCanvasRenderer = function() {return true;};
 Graphics._defaultStretchMode = function() {return true;};
 document.body.parentNode.style.overflow = "hidden";
