@@ -270,6 +270,60 @@
         }
         // 读档全链路诊断：loadGame 入口/出口、extractSaveContents 完成后关键槽位
         // 状态、SceneManager.goto 目标——黑屏时日志可直接指出卡在哪一步
+        // repairGameObjects：对全局 $gamePlayer/$gameMap/$gameScreen 做原型与
+        // 稀疏数组修复。在 loadGame 出口调用（此时已是全局存档数据），
+        // 不依赖 extractSaveContents 劫持是否被 mod_core 覆盖。
+        function repairGameObjects() {
+            try {
+                if (typeof $gamePlayer === "undefined" || !$gamePlayer) return;
+                // $gamePlayer 原型
+                if (typeof $gamePlayer.isTransferring !== "function" && typeof window.Game_Player !== "undefined") {
+                    try { Object.setPrototypeOf($gamePlayer, window.Game_Player.prototype); } catch (e) {}
+                }
+                // followers 原型 + _data 稀疏数组
+                if ($gamePlayer._followers) {
+                    if (typeof $gamePlayer._followers.reverseEach !== "function" && typeof window.Game_Followers !== "undefined") {
+                        try { Object.setPrototypeOf($gamePlayer._followers, window.Game_Followers.prototype); } catch (e2) {}
+                    }
+                    if ($gamePlayer._followers._data && typeof $gamePlayer._followers._data.forEach !== "function") {
+                        try { $gamePlayer._followers._data = toArrayIfNeeded($gamePlayer._followers._data); } catch (e3) {}
+                    }
+                    if ($gamePlayer._followers._data) {
+                        try {
+                            for (var fi = 0; fi < $gamePlayer._followers._data.length; fi++) {
+                                var flw = $gamePlayer._followers._data[fi];
+                                if (flw && typeof flw.isVisible !== "function" && typeof window.Game_Follower !== "undefined") {
+                                    try { Object.setPrototypeOf(flw, window.Game_Follower.prototype); } catch (e4) {}
+                                }
+                            }
+                        } catch (e5) {}
+                    }
+                }
+                // $gameMap 原型 + 内部数组
+                if (typeof $gameMap !== "undefined" && $gameMap) {
+                    if (typeof $gameMap.mapId !== "function" && typeof window.Game_Map !== "undefined") {
+                        try { Object.setPrototypeOf($gameMap, window.Game_Map.prototype); } catch (e6) {}
+                    }
+                    if ($gameMap._events && typeof $gameMap._events.filter !== "function") {
+                        try { $gameMap._events = toArrayIfNeeded($gameMap._events); } catch (e7) {}
+                    }
+                    if ($gameMap._vehicles && typeof $gameMap._vehicles.forEach !== "function") {
+                        try { $gameMap._vehicles = toArrayIfNeeded($gameMap._vehicles); } catch (e8) {}
+                    }
+                    if ($gameMap._commonEvents && typeof $gameMap._commonEvents.forEach !== "function") {
+                        try { $gameMap._commonEvents = toArrayIfNeeded($gameMap._commonEvents); } catch (e9) {}
+                    }
+                }
+                // $gameScreen._pictures 稀疏数组
+                if (typeof $gameScreen !== "undefined" && $gameScreen && $gameScreen._pictures && typeof $gameScreen._pictures.forEach !== "function") {
+                    try { $gameScreen._pictures = toArrayIfNeeded($gameScreen._pictures); } catch (e10) {}
+                }
+                // $gameActors._data
+                if (typeof $gameActors !== "undefined" && $gameActors && $gameActors._data && typeof $gameActors._data.filter !== "function") {
+                    try { $gameActors._data = toArrayIfNeeded($gameActors._data); } catch (e11) {}
+                }
+            } catch (e) {}
+        }
         var loadDiagTimer = setInterval(function () {
             try {
                 if (typeof window.DataManager === "undefined" || typeof window.DataManager.loadGame !== "function") return;
@@ -279,6 +333,8 @@
                     console.log("[v2-diag] loadGame enter savefileId=" + savefileId);
                     try {
                         var ret = origLoadGame.call(this, savefileId);
+                        // 出口修复：mod_core 可能覆盖 extractSaveContents，故直接修全局对象
+                        repairGameObjects();
                         console.log("[v2-diag] loadGame exit ret=" + ret +
                             " player.isTransferring=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && typeof $gamePlayer.isTransferring === "function" ? $gamePlayer.isTransferring() : "MISSING") +
                             " map.mapId=" + (typeof $gameMap !== "undefined" && $gameMap && typeof $gameMap.mapId === "function" ? $gameMap.mapId() : "MISSING") +
@@ -408,6 +464,9 @@
                         }
                     } catch (e) {}
                     var result = orig.call(this, contents);
+                    // 双保险：即使 mod_core 覆盖了本劫持，loadGame 出口也会调 repairGameObjects；
+                    // 这里在 extractSaveContents 正常路径也直接修全局对象
+                    repairGameObjects();
                     // 读档后关键字段快照：配合全局错误捕获，直接指出读档后哪个槽位不健全
                     try {
                         var snap = "player.isTransferring=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && typeof $gamePlayer.isTransferring === "function" ? "ok" : "MISSING") +
