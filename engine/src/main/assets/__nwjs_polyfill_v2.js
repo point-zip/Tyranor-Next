@@ -5,6 +5,10 @@
     if (window.__tyranorNwPolyfillV2) return;
     window.__tyranorNwPolyfillV2 = true;
 
+    // 黑屏定位探针：确认注入的 earlyHook 是否在 WebView 中实际执行
+    // （若此日志缺失 → HTML 未解析到注入点/服务端或 WebView 层问题）
+    try { console.log("[v2] polyfill executing, window.nw=" + (typeof window.nw) + " doc.readyState=" + (document.readyState || "?")); } catch (eProbe) {}
+
     // ---- JoiPlay joiSaveAs + screen.orientation helpers (backend-agnostic fallbacks) ----
     try {
         if (typeof window.joiSaveAs !== "function") {

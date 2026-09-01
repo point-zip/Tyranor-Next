@@ -480,8 +480,11 @@ class TyranoActivity : Activity() {
     private fun isLocalGameUri(uri: Uri?): Boolean {
         val server = localServer ?: return false
         if (!uri?.scheme.equals("http", ignoreCase = true)) return false
-        return (uri?.host.equals("localhost", ignoreCase = true) || uri?.host == "127.0.0.1") &&
-            uri?.port == server.port
+        // 兼容 localhost/127.0.0.1/host 为空（部分 WebView 对 localhost 归一化）的解析差异
+        val host = uri?.host?.trim()?.lowercase(Locale.ROOT)
+        val isLoopback = host.isNullOrEmpty() || host == "localhost" || host == "127.0.0.1" ||
+            host == "0.0.0.0" || host == "[::1]"
+        return isLoopback && (uri?.port == server.port)
     }
 
     private fun isAllowedGameResource(uri: Uri): Boolean = isLocalGameUri(uri) ||
