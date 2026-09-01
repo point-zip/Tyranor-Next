@@ -9,6 +9,32 @@
     // （若此日志缺失 → HTML 未解析到注入点/服务端或 WebView 层问题）
     try { console.log("[v2] polyfill executing, window.nw=" + (typeof window.nw) + " doc.readyState=" + (document.readyState || "?")); } catch (eProbe) {}
 
+    // 全局错误捕获：把 match/clamp 等读档错误的堆栈打到 console
+    // （WebView console 会经 onConsoleMessage 落 logcat，可定位精确文件:行号）
+    (function () {
+        function reportError(e, source, lineno, colno) {
+            try {
+                var msg = (e && e.message) ? e.message : String(e);
+                var stack = (e && e.stack) ? String(e.stack) : "";
+                console.error("[v2-err] " + msg + " @ " + (source || "?") + ":" + (lineno || "?") + ":" + (colno || "?"));
+                if (stack) { try { console.error("[v2-err-stack] " + stack.split("\n").slice(0, 8).join(" | ")); } catch (e2) {} }
+            } catch (e3) {}
+        }
+        try {
+            var origOnerror = window.onerror;
+            window.onerror = function (msg, source, lineno, colno, error) {
+                try { reportError(error || msg, source, lineno, colno); } catch (e) {}
+                if (typeof origOnerror === "function") { try { return origOnerror.apply(this, arguments); } catch (e4) {} }
+                return false;
+            };
+            if (typeof window.addEventListener === "function") {
+                window.addEventListener("error", function (ev) {
+                    try { reportError(ev && ev.error, ev && ev.filename, ev && ev.lineno, ev && ev.colno); } catch (e) {}
+                }, true);
+            }
+        } catch (e5) {}
+    })();
+
     // ---- JoiPlay joiSaveAs + screen.orientation helpers (backend-agnostic fallbacks) ----
     try {
         if (typeof window.joiSaveAs !== "function") {
@@ -381,7 +407,17 @@
                             } catch (e10) {}
                         }
                     } catch (e) {}
-                    return orig.call(this, contents);
+                    var result = orig.call(this, contents);
+                    // 读档后关键字段快照：配合全局错误捕获，直接指出读档后哪个槽位不健全
+                    try {
+                        var snap = "player.isTransferring=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && typeof $gamePlayer.isTransferring === "function" ? "ok" : "MISSING") +
+                            "|map.mapId=" + (typeof $gameMap !== "undefined" && $gameMap && typeof $gameMap.mapId === "function" ? "ok" : "MISSING") +
+                            "|sys.locale=" + (typeof $gameSystem !== "undefined" && $gameSystem && typeof $gameSystem.locale !== "undefined" ? (typeof $gameSystem.locale === "string" ? "ok:" + $gameSystem.locale : "nonstring") : "MISSING") +
+                            "|screen._pictures=" + (typeof $gameScreen !== "undefined" && $gameScreen && $gameScreen._pictures && typeof $gameScreen._pictures.forEach === "function" ? "ok" : "BROKEN") +
+                            "|followers._data=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && $gamePlayer._followers && $gamePlayer._followers._data && typeof $gamePlayer._followers._data.forEach === "function" ? "ok" : "BROKEN");
+                        console.log("[v2-diag] extractSaveContents done: " + snap);
+                    } catch (eSnap) {}
+                    return result;
                 };
                 DataManager.extractSaveContents.__tyranorV2Patched = true;
                 clearInterval(timer);
