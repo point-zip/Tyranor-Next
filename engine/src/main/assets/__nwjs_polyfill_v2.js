@@ -280,13 +280,23 @@
                 if (typeof $gamePlayer.isTransferring !== "function" && typeof window.Game_Player !== "undefined") {
                     try { Object.setPrototypeOf($gamePlayer, window.Game_Player.prototype); } catch (e) {}
                 }
-                // followers 原型 + _data 稀疏数组
+                // followers 原型 + _data 稀疏数组（_followers 缺失时也重建）
+                if (!$gamePlayer._followers) {
+                    if (typeof window.Game_Followers !== "undefined") {
+                        try { $gamePlayer._followers = new window.Game_Followers(); } catch (eFollow) {}
+                    }
+                }
                 if ($gamePlayer._followers) {
                     if (typeof $gamePlayer._followers.reverseEach !== "function" && typeof window.Game_Followers !== "undefined") {
                         try { Object.setPrototypeOf($gamePlayer._followers, window.Game_Followers.prototype); } catch (e2) {}
                     }
-                    if ($gamePlayer._followers._data && typeof $gamePlayer._followers._data.forEach !== "function") {
-                        try { $gamePlayer._followers._data = toArrayIfNeeded($gamePlayer._followers._data); } catch (e3) {}
+                    // _data 缺失或退化时重建为数组
+                    if (!$gamePlayer._followers._data || typeof $gamePlayer._followers._data.forEach !== "function") {
+                        try {
+                            $gamePlayer._followers._data = ($gamePlayer._followers._data && typeof $gamePlayer._followers._data === "object")
+                                ? toArrayIfNeeded($gamePlayer._followers._data)
+                                : [];
+                        } catch (e3) { try { $gamePlayer._followers._data = []; } catch (e3b) {} }
                     }
                     if ($gamePlayer._followers._data) {
                         try {
@@ -686,6 +696,71 @@
             } catch (e3) {}
         }, 200);
         setTimeout(function () { try { clearInterval(timer2); } catch (e) {} }, 10000);
+    })();
+
+    // ---- joiplay/v1 式引擎健壮性补丁 ----
+    // 参考 joiplay overrides.json 的防御思路（把脆弱调用 try/catch 或短路）：
+    // 存档反序列化后 follower/角色 _characterName 可能为 undefined，
+    // Sprite_Character.setCharacterBitmap → ImageManager.isBigCharacter →
+    // filename.match(...) 崩溃。v1 用预留引擎核心天然规避；v2 用游戏自带
+    // 引擎，需在兼容层兜底。
+    (function () {
+        var patchTimer = setInterval(function () {
+            try {
+                // Game_CharacterBase.characterName 兜底：undefined/null → ""
+                if (typeof window.Game_CharacterBase !== "undefined" &&
+                    typeof window.Game_CharacterBase.prototype.characterName === "function" &&
+                    !window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched) {
+                    var origCN = window.Game_CharacterBase.prototype.characterName;
+                    window.Game_CharacterBase.prototype.characterName = function () {
+                        try {
+                            var v = origCN.call(this);
+                            return (v === undefined || v === null) ? "" : v;
+                        } catch (e) { return ""; }
+                    };
+                    window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched = true;
+                }
+                // ImageManager.isBigCharacter / isObjectCharacter 防御：filename 非字符串 → false
+                if (typeof window.ImageManager !== "undefined") {
+                    if (typeof window.ImageManager.isBigCharacter === "function" && !window.ImageManager.isBigCharacter.__tyranorV2Patched) {
+                        var origBig = window.ImageManager.isBigCharacter;
+                        window.ImageManager.isBigCharacter = function (filename) {
+                            if (typeof filename !== "string") return false;
+                            try { return origBig.call(this, filename); } catch (e) { return false; }
+                        };
+                        window.ImageManager.isBigCharacter.__tyranorV2Patched = true;
+                    }
+                    if (typeof window.ImageManager.isObjectCharacter === "function" && !window.ImageManager.isObjectCharacter.__tyranorV2Patched) {
+                        var origObj = window.ImageManager.isObjectCharacter;
+                        window.ImageManager.isObjectCharacter = function (filename) {
+                            if (typeof filename !== "string") return false;
+                            try { return origObj.call(this, filename); } catch (e) { return false; }
+                        };
+                        window.ImageManager.isObjectCharacter.__tyranorV2Patched = true;
+                    }
+                }
+                // Game_Actor.characterName 兜底（队伍角色经此路径）
+                if (typeof window.Game_Actor !== "undefined" &&
+                    typeof window.Game_Actor.prototype.characterName === "function" &&
+                    !window.Game_Actor.prototype.characterName.__tyranorV2Patched) {
+                    var origActorCN = window.Game_Actor.prototype.characterName;
+                    window.Game_Actor.prototype.characterName = function () {
+                        try {
+                            var v = origActorCN.call(this);
+                            return (v === undefined || v === null) ? "" : v;
+                        } catch (e) { return ""; }
+                    };
+                    window.Game_Actor.prototype.characterName.__tyranorV2Patched = true;
+                }
+                // 全部就绪后停止轮询
+                if ((typeof window.Game_CharacterBase === "undefined" || (window.Game_CharacterBase.prototype.characterName && window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched)) &&
+                    (typeof window.Game_Actor === "undefined" || (window.Game_Actor.prototype.characterName && window.Game_Actor.prototype.characterName.__tyranorV2Patched)) &&
+                    (typeof window.ImageManager === "undefined" || (window.ImageManager.isBigCharacter && window.ImageManager.isBigCharacter.__tyranorV2Patched))) {
+                    clearInterval(patchTimer);
+                }
+            } catch (e) {}
+        }, 200);
+        setTimeout(function () { try { clearInterval(patchTimer); } catch (e) {} }, 10000);
     })();
 
     console.log("[nw-polyfill-v2] JoiPlay compat installed (webgl shims + overrides + joiSaveAs)");
