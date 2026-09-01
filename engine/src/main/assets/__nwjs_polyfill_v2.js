@@ -454,7 +454,9 @@
                 function ensureFollowersData(host) {
                     if (!host) return;
                     var f = null;
-                    try { f = typeof host.followers === "function" ? host.followers() : host._followers; } catch (e) { f = host._followers; }
+                    // 注意：必须直接访问 _followers 字段，不能调 host.followers()
+                    // （followers() 已被下方劫持并回调 ensureFollowersData，会造成无限递归）
+                    try { f = host._followers; } catch (e) { f = null; }
                     if (!f) {
                         if (typeof window.Game_Followers !== "undefined") {
                             try { host._followers = new window.Game_Followers(); f = host._followers; } catch (e2) { return; }
