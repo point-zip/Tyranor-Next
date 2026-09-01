@@ -226,6 +226,52 @@
                 return arr;
             } catch (e) { return []; }
         }
+        // 读档全链路诊断：loadGame 入口/出口、extractSaveContents 完成后关键槽位
+        // 状态、SceneManager.goto 目标——黑屏时日志可直接指出卡在哪一步
+        var loadDiagTimer = setInterval(function () {
+            try {
+                if (typeof window.DataManager === "undefined" || typeof window.DataManager.loadGame !== "function") return;
+                if (DataManager.loadGame.__tyranorV2Diag) { clearInterval(loadDiagTimer); return; }
+                var origLoadGame = DataManager.loadGame;
+                DataManager.loadGame = function (savefileId) {
+                    console.log("[v2-diag] loadGame enter savefileId=" + savefileId);
+                    try {
+                        var ret = origLoadGame.call(this, savefileId);
+                        console.log("[v2-diag] loadGame exit ret=" + ret +
+                            " player.isTransferring=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && typeof $gamePlayer.isTransferring === "function" ? $gamePlayer.isTransferring() : "MISSING") +
+                            " map.mapId=" + (typeof $gameMap !== "undefined" && $gameMap && typeof $gameMap.mapId === "function" ? $gameMap.mapId() : "MISSING") +
+                            " events.filter=" + (typeof $gameMap !== "undefined" && $gameMap && $gameMap._events && typeof $gameMap._events.filter === "function" ? "ok" : "BROKEN") +
+                            " vehicles.forEach=" + (typeof $gameMap !== "undefined" && $gameMap && $gameMap._vehicles && typeof $gameMap._vehicles.forEach === "function" ? "ok" : "BROKEN") +
+                            " followers._data=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && $gamePlayer._followers && $gamePlayer._followers._data && typeof $gamePlayer._followers._data.forEach === "function" ? "ok" : "BROKEN"));
+                        return ret;
+                    } catch (e) {
+                        console.error("[v2-diag] loadGame threw", e && e.stack ? e.stack : e);
+                        throw e;
+                    }
+                };
+                DataManager.loadGame.__tyranorV2Diag = true;
+                clearInterval(loadDiagTimer);
+            } catch (e) {}
+        }, 200);
+        setTimeout(function () { try { clearInterval(loadDiagTimer); } catch (e) {} }, 10000);
+        // SceneManager.goto 目标记录：读档成功/失败最终切到哪个场景
+        var gotoDiagTimer = setInterval(function () {
+            try {
+                if (typeof window.SceneManager === "undefined" || typeof window.SceneManager.goto !== "function") return;
+                if (SceneManager.goto.__tyranorV2Diag) { clearInterval(gotoDiagTimer); return; }
+                var origGoto = SceneManager.goto;
+                SceneManager.goto = function (sceneClass) {
+                    try { console.log("[v2-diag] SceneManager.goto -> " + (sceneClass && sceneClass.name ? sceneClass.name : sceneClass)); } catch (e2) {}
+                    try { return origGoto.call(this, sceneClass); } catch (e3) {
+                        console.error("[v2-diag] SceneManager.goto threw", e3 && e3.stack ? e3.stack : e3);
+                        throw e3;
+                    }
+                };
+                SceneManager.goto.__tyranorV2Diag = true;
+                clearInterval(gotoDiagTimer);
+            } catch (e) {}
+        }, 200);
+        setTimeout(function () { try { clearInterval(gotoDiagTimer); } catch (e) {} }, 10000);
         var timer = setInterval(function () {
             try {
                 if (typeof window.DataManager === "undefined" || typeof window.DataManager.extractSaveContents !== "function") return;
