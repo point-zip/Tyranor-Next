@@ -428,7 +428,7 @@
                         }
                         if ($gameScreen._fadeOutDuration === undefined || $gameScreen._fadeOutDuration === null) { $gameScreen._fadeOutDuration = 0; }
                         if ($gameScreen._fadeInDuration === undefined || $gameScreen._fadeInDuration === null) { $gameScreen._fadeInDuration = 0; }
-                        if ($gameScreen._tone === undefined || $gameScreen._tone === null) { $gameScreen._tone = [0, 0, 0, 0]; }
+                        if ($gameScreen._tone === undefined || $gameScreen._tone === null || typeof $gameScreen._tone.clone !== 'function') { $gameScreen._tone = [0, 0, 0, 0]; }
                         if ($gameScreen._shakePower === undefined || $gameScreen._shakePower === null) { $gameScreen._shakePower = 0; }
                         if ($gameScreen._shakeSpeed === undefined || $gameScreen._shakeSpeed === null) { $gameScreen._shakeSpeed = 0; }
                         if ($gameScreen._shakeDuration === undefined || $gameScreen._shakeDuration === null) { $gameScreen._shakeDuration = 0; }
@@ -883,6 +883,41 @@
                         $dataSystem.locale = "en";
                         $dataSystem.__localePatched = true;
                     } catch (eLocale) {}
+                }
+                // Game_Screen.tone 警惕：存档反序列化后 _tone 可能退化为 plain object
+                // （Array 原型丢失 → tone.clone() 不存在 → TypeError）
+                if (typeof window.Game_Screen !== "undefined" && typeof window.Game_Screen.prototype.tone === "function" &&
+                    !window.Game_Screen.prototype.tone.__tyranorV2Patched) {
+                    var origTone = window.Game_Screen.prototype.tone;
+                    window.Game_Screen.prototype.tone = function () {
+                        try {
+                            var v = origTone.call(this);
+                            if (!v || !Array.isArray(v) || typeof v.clone !== "function") {
+                                this._tone = [0, 0, 0, 0];
+                                return this._tone;
+                            }
+                            return v;
+                        } catch (e) { return [0, 0, 0, 0]; }
+                    };
+                    window.Game_Screen.prototype.tone.__tyranorV2Patched = true;
+                }
+                // Spriteset_Base.updateToneChanger 防御：tone.clone 健壮性
+                if (typeof window.Spriteset_Base !== "undefined" && typeof window.Spriteset_Base.prototype.updateToneChanger === "function" &&
+                    !window.Spriteset_Base.prototype.updateToneChanger.__tyranorV2Patched) {
+                    var origToneChanger = window.Spriteset_Base.prototype.updateToneChanger;
+                    window.Spriteset_Base.prototype.updateToneChanger = function () {
+                        try {
+                            // 确保 tone() 返回真实 Array（有 clone/equals）
+                            var tone = $gameScreen.tone();
+                            if (tone && typeof tone.clone !== "function") {
+                                $gameScreen._tone = [0, 0, 0, 0];
+                            }
+                            return origToneChanger.call(this);
+                        } catch (e) {
+                            try { this._tone = $gameScreen._tone = [0, 0, 0, 0]; } catch (e2) {}
+                        }
+                    };
+                    window.Spriteset_Base.prototype.updateToneChanger.__tyranorV2Patched = true;
                 }
                 // Sprite/ScreenSprite opacity setter 防御：value 非有限数字 → 0
                 // （$gameScreen._flashColor[3] 或角色 _opacity 经存档后可能 undefined，
