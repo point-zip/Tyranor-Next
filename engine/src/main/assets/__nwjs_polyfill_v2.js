@@ -273,13 +273,50 @@
         // repairGameObjects：对全局 $gamePlayer/$gameMap/$gameScreen 做原型与
         // 稀疏数组修复。在 loadGame 出口调用（此时已是全局存档数据），
         // 不依赖 extractSaveContents 劫持是否被 mod_core 覆盖。
+        // ensureCharacterDefaults：存档反序列化后 Game_CharacterBase 派生对象
+        // 可能缺 _opacity/_blendMode/_bushDepth 等字段，Sprite_Character.updateOther
+        // → opacity() 返回 undefined → Sprite.opacity setter 里 value.clamp(0,255)
+        // 崩（clamp 报错根因，同 match 的字段丢失问题）。
+        function ensureCharacterDefaults(obj) {
+            if (!obj) return;
+            var changed = false;
+            try {
+                if (obj._opacity === undefined || obj._opacity === null) { obj._opacity = 255; changed = true; }
+                if (obj._blendMode === undefined || obj._blendMode === null) { obj._blendMode = 0; changed = true; }
+                if (obj._bushDepth === undefined || obj._bushDepth === null) { obj._bushDepth = 0; changed = true; }
+                if (obj._characterName === undefined || obj._characterName === null) { obj._characterName = ""; changed = true; }
+                if (obj._characterIndex === undefined || obj._characterIndex === null) { obj._characterIndex = 0; changed = true; }
+                if (obj._tileId === undefined || obj._tileId === null) { obj._tileId = 0; changed = true; }
+                if (obj._direction === undefined || obj._direction === null) { obj._direction = 2; changed = true; }
+                if (obj._pattern === undefined || obj._pattern === null) { obj._pattern = 1; changed = true; }
+                if (obj._priorityType === undefined || obj._priorityType === null) { obj._priorityType = 1; changed = true; }
+                if (obj._walkAnime === undefined || obj._walkAnime === null) { obj._walkAnime = true; changed = true; }
+                if (obj._stepAnime === undefined || obj._stepAnime === null) { obj._stepAnime = false; changed = true; }
+                if (obj._directionFix === undefined || obj._directionFix === null) { obj._directionFix = false; changed = true; }
+                if (obj._through === undefined || obj._through === null) { obj._through = false; changed = true; }
+                if (obj._transparent === undefined || obj._transparent === null) { obj._transparent = false; changed = true; }
+                if (obj._moveSpeed === undefined || obj._moveSpeed === null) { obj._moveSpeed = 4; changed = true; }
+                if (obj._moveFrequency === undefined || obj._moveFrequency === null) { obj._moveFrequency = 6; changed = true; }
+                if (obj._animationId === undefined || obj._animationId === null) { obj._animationId = 0; changed = true; }
+                if (obj._balloonId === undefined || obj._balloonId === null) { obj._balloonId = 0; changed = true; }
+                if (obj._animationPlaying === undefined || obj._animationPlaying === null) { obj._animationPlaying = false; changed = true; }
+                if (obj._balloonPlaying === undefined || obj._balloonPlaying === null) { obj._balloonPlaying = false; changed = true; }
+                if (obj._animationCount === undefined || obj._animationCount === null) { obj._animationCount = 0; changed = true; }
+                if (obj._stopCount === undefined || obj._stopCount === null) { obj._stopCount = 0; changed = true; }
+                if (obj._jumpCount === undefined || obj._jumpCount === null) { obj._jumpCount = 0; changed = true; }
+                if (obj._jumpPeak === undefined || obj._jumpPeak === null) { obj._jumpPeak = 0; changed = true; }
+                if (obj._movementSuccess === undefined || obj._movementSuccess === null) { obj._movementSuccess = true; changed = true; }
+                return changed;
+            } catch (e) { return changed; }
+        }
         function repairGameObjects() {
             try {
                 if (typeof $gamePlayer === "undefined" || !$gamePlayer) return;
-                // $gamePlayer 原型
+                // $gamePlayer 原型 + 默认字段
                 if (typeof $gamePlayer.isTransferring !== "function" && typeof window.Game_Player !== "undefined") {
                     try { Object.setPrototypeOf($gamePlayer, window.Game_Player.prototype); } catch (e) {}
                 }
+                ensureCharacterDefaults($gamePlayer);
                 // followers 原型 + _data 稀疏数组（_followers 缺失时也重建）
                 if (!$gamePlayer._followers) {
                     if (typeof window.Game_Followers !== "undefined") {
@@ -305,8 +342,20 @@
                                 if (flw && typeof flw.isVisible !== "function" && typeof window.Game_Follower !== "undefined") {
                                     try { Object.setPrototypeOf(flw, window.Game_Follower.prototype); } catch (e4) {}
                                 }
+                                ensureCharacterDefaults(flw);
                             }
                         } catch (e5) {}
+                    }
+                    // $gameParty 成员也可能退化（Sprite_Character 渲染队友时读 _opacity）
+                    if (typeof $gameParty !== "undefined" && $gameParty && typeof $gameParty.members === "function") {
+                        try {
+                            var partyMembers = $gameParty.members();
+                            if (partyMembers && typeof partyMembers.forEach === "function") {
+                                for (var pm = 0; pm < partyMembers.length; pm++) {
+                                    ensureCharacterDefaults(partyMembers[pm]);
+                                }
+                            }
+                        } catch (ePm) {}
                     }
                 }
                 // $gameMap 原型 + 内部数组
@@ -322,6 +371,45 @@
                     }
                     if ($gameMap._commonEvents && typeof $gameMap._commonEvents.forEach !== "function") {
                         try { $gameMap._commonEvents = toArrayIfNeeded($gameMap._commonEvents); } catch (e9) {}
+                    }
+                    // 地图内事件/载具对象逐个补角色默认字段（_opacity 等）
+                    // Sprite_Character.updateOther → opacity() → _opacity undefined →
+                    // Sprite.opacity setter 里 value.clamp(0,255) 崩（clamp 报错根因）
+                    if ($gameMap._events) {
+                        try {
+                            for (var ei = 0; ei < $gameMap._events.length; ei++) {
+                                var evObj = $gameMap._events[ei];
+                                if (evObj) {
+                                    if (typeof evObj.isErased !== "function" && typeof window.Game_Event !== "undefined") {
+                                        try { Object.setPrototypeOf(evObj, window.Game_Event.prototype); } catch (eEv) {}
+                                    }
+                                    ensureCharacterDefaults(evObj);
+                                }
+                            }
+                        } catch (eEv2) {}
+                    }
+                    if ($gameMap._vehicles) {
+                        try {
+                            for (var vi2 = 0; vi2 < $gameMap._vehicles.length; vi2++) {
+                                var vhObj = $gameMap._vehicles[vi2];
+                                if (vhObj) {
+                                    if (typeof vhObj.isAirship !== "function" && typeof window.Game_Vehicle !== "undefined") {
+                                        try { Object.setPrototypeOf(vhObj, window.Game_Vehicle.prototype); } catch (eVh) {}
+                                    }
+                                    ensureCharacterDefaults(vhObj);
+                                }
+                            }
+                        } catch (eVh2) {}
+                    }
+                    if ($gameMap._commonEvents) {
+                        try {
+                            for (var ci = 0; ci < $gameMap._commonEvents.length; ci++) {
+                                var ceObj = $gameMap._commonEvents[ci];
+                                if (ceObj && typeof ceObj.refresh !== "function" && typeof window.Game_CommonEvent !== "undefined") {
+                                    try { Object.setPrototypeOf(ceObj, window.Game_CommonEvent.prototype); } catch (eCe) {}
+                                }
+                            }
+                        } catch (eCe2) {}
                     }
                 }
                 // $gameScreen._pictures 稀疏数组
