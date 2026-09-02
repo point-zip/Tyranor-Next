@@ -412,13 +412,49 @@
                         } catch (eCe2) {}
                     }
                 }
-                // $gameScreen._pictures 稀疏数组
-                if (typeof $gameScreen !== "undefined" && $gameScreen && $gameScreen._pictures && typeof $gameScreen._pictures.forEach !== "function") {
-                    try { $gameScreen._pictures = toArrayIfNeeded($gameScreen._pictures); } catch (e10) {}
+                // $gameScreen._pictures 稀疏数组 + 关键字段兜底
+                // （_flashColor 缺失 → flashColor()[3] undefined →
+                // ScreenSprite.opacity setter value.clamp 崩）
+                if (typeof $gameScreen !== "undefined" && $gameScreen) {
+                    if ($gameScreen._pictures && typeof $gameScreen._pictures.forEach !== "function") {
+                        try { $gameScreen._pictures = toArrayIfNeeded($gameScreen._pictures); } catch (e10) {}
+                    }
+                    try {
+                        if (!Array.isArray($gameScreen._flashColor) || $gameScreen._flashColor.length < 4) {
+                            $gameScreen._flashColor = [0, 0, 0, 0];
+                        }
+                        if ($gameScreen._brightness === undefined || $gameScreen._brightness === null) {
+                            $gameScreen._brightness = 255;
+                        }
+                        if ($gameScreen._fadeOutDuration === undefined || $gameScreen._fadeOutDuration === null) { $gameScreen._fadeOutDuration = 0; }
+                        if ($gameScreen._fadeInDuration === undefined || $gameScreen._fadeInDuration === null) { $gameScreen._fadeInDuration = 0; }
+                        if ($gameScreen._tone === undefined || $gameScreen._tone === null) { $gameScreen._tone = [0, 0, 0, 0]; }
+                        if ($gameScreen._shakePower === undefined || $gameScreen._shakePower === null) { $gameScreen._shakePower = 0; }
+                        if ($gameScreen._shakeSpeed === undefined || $gameScreen._shakeSpeed === null) { $gameScreen._shakeSpeed = 0; }
+                        if ($gameScreen._shakeDuration === undefined || $gameScreen._shakeDuration === null) { $gameScreen._shakeDuration = 0; }
+                        if ($gameScreen._shakeDirection === undefined || $gameScreen._shakeDirection === null) { $gameScreen._shakeDirection = 1; }
+                        if ($gameScreen._zoomX === undefined || $gameScreen._zoomX === null) { $gameScreen._zoomX = 0; }
+                        if ($gameScreen._zoomY === undefined || $gameScreen._zoomY === null) { $gameScreen._zoomY = 0; }
+                        if ($gameScreen._zoomScale === undefined || $gameScreen._zoomScale === null) { $gameScreen._zoomScale = 1; }
+                        if ($gameScreen._zoomScaleX === undefined || $gameScreen._zoomScaleX === null) { $gameScreen._zoomScaleX = 1; }
+                        if ($gameScreen._zoomScaleY === undefined || $gameScreen._zoomScaleY === null) { $gameScreen._zoomScaleY = 1; }
+                        if ($gameScreen._weatherType === undefined || $gameScreen._weatherType === null) { $gameScreen._weatherType = "none"; }
+                        if ($gameScreen._weatherPower === undefined || $gameScreen._weatherPower === null) { $gameScreen._weatherPower = 0; }
+                        if ($gameScreen._pictures === undefined || $gameScreen._pictures === null) { $gameScreen._pictures = []; }
+                        if (typeof $gameScreen.clear === "function" && $gameScreen._weatherPower === 0 && !$gameScreen._weatherType) {
+                            // no-op
+                        }
+                    } catch (eScr) {}
                 }
                 // $gameActors._data
                 if (typeof $gameActors !== "undefined" && $gameActors && $gameActors._data && typeof $gameActors._data.filter !== "function") {
                     try { $gameActors._data = toArrayIfNeeded($gameActors._data); } catch (e11) {}
+                }
+                // $gameSystem 关键字段兜底（sys.locale 已单独兜，这里补 _saveEnabled 等）
+                if (typeof $gameSystem !== "undefined" && $gameSystem) {
+                    try {
+                        if (typeof $gameSystem.locale !== "string") { $gameSystem.locale = "en"; }
+                    } catch (eSys) {}
                 }
             } catch (e) {}
         }
@@ -848,11 +884,44 @@
                         $dataSystem.__localePatched = true;
                     } catch (eLocale) {}
                 }
+                // Sprite/ScreenSprite opacity setter 防御：value 非有限数字 → 0
+                // （$gameScreen._flashColor[3] 或角色 _opacity 经存档后可能 undefined，
+                // setter 里 value.clamp(0,255) 崩；这是 clamp 报错的最终防线）
+                function guardOpacitySetter(proto, tag) {
+                    try {
+                        var desc = Object.getOwnPropertyDescriptor(proto, "opacity");
+                        if (!desc || desc.__tyranorV2Patched) return;
+                        var origSet = desc.set;
+                        var newDesc = {
+                            get: desc.get,
+                            set: function (value) {
+                                try {
+                                    if (typeof value !== "number" || isNaN(value)) value = 0;
+                                    if (origSet) { return origSet.call(this, value); }
+                                    this.alpha = value.clamp(0, 255) / 255;
+                                } catch (e) {
+                                    try { this.alpha = 0; } catch (e2) {}
+                                }
+                            },
+                            configurable: true,
+                        };
+                        newDesc.__tyranorV2Patched = true;
+                        Object.defineProperty(proto, "opacity", newDesc);
+                        if (tag) { try { console.log("[v2] opacity guard installed: " + tag); } catch (e3) {} }
+                    } catch (e) {}
+                }
+                if (typeof window.Sprite !== "undefined" && window.Sprite.prototype) {
+                    guardOpacitySetter(window.Sprite.prototype, "Sprite");
+                }
+                if (typeof window.ScreenSprite !== "undefined" && window.ScreenSprite.prototype) {
+                    guardOpacitySetter(window.ScreenSprite.prototype, "ScreenSprite");
+                }
                 // 全部就绪后停止轮询
                 if ((typeof window.Game_CharacterBase === "undefined" || (window.Game_CharacterBase.prototype.characterName && window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched)) &&
                     (typeof window.Game_Actor === "undefined" || (window.Game_Actor.prototype.characterName && window.Game_Actor.prototype.characterName.__tyranorV2Patched)) &&
                     (typeof window.ImageManager === "undefined" || (window.ImageManager.isBigCharacter && window.ImageManager.isBigCharacter.__tyranorV2Patched)) &&
-                    (typeof $dataSystem === "undefined" || $dataSystem.__localePatched)) {
+                    (typeof $dataSystem === "undefined" || $dataSystem.__localePatched) &&
+                    (typeof window.Sprite === "undefined" || (window.Sprite.prototype.opacity && window.Sprite.prototype.opacity.__tyranorV2Patched))) {
                     clearInterval(patchTimer);
                 }
             } catch (e) {}
