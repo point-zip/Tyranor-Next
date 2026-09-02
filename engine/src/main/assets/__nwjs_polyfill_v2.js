@@ -919,6 +919,34 @@
                     };
                     window.Spriteset_Base.prototype.updateToneChanger.__tyranorV2Patched = true;
                 }
+                // Spriteset_Map.updateShadow 防御：airship（$gameMap.airship()）可能退化
+                // 为 plain object（Array 原型丢失 → shadowX 方法不存在 → TypeError）
+                if (typeof window.Spriteset_Map !== "undefined" && typeof window.Spriteset_Map.prototype.updateShadow === "function" &&
+                    !window.Spriteset_Map.prototype.updateShadow.__tyranorV2Patched) {
+                    var origUpdateShadow = window.Spriteset_Map.prototype.updateShadow;
+                    window.Spriteset_Map.prototype.updateShadow = function () {
+                        try {
+                            // 确保 airship 是真实 Game_Vehicle（有 shadowX 等）
+                            var airship = $gameMap.airship();
+                            if (airship && typeof airship.shadowX !== "function" && typeof window.Game_Vehicle !== "undefined") {
+                                try { Object.setPrototypeOf(airship, window.Game_Vehicle.prototype); } catch (eSh) {}
+                                if (typeof airship.shadowX !== "function") {
+                                    // 彻底退化：重置 _vehicles 槽位
+                                    try {
+                                        $gameMap._vehicles[2] = new window.Game_Vehicle("airship");
+                                        airship = $gameMap._vehicles[2];
+                                    } catch (eSh2) { return; }
+                                }
+                            }
+                            if (!airship || typeof airship.shadowX !== "function") {
+                                console.warn("[nw-polyfill-v2] updateShadow: airship degraded, skipping");
+                                return;
+                            }
+                            return origUpdateShadow.call(this);
+                        } catch (e) {}
+                    };
+                    window.Spriteset_Map.prototype.updateShadow.__tyranorV2Patched = true;
+                }
                 // Sprite/ScreenSprite opacity setter 防御：value 非有限数字 → 0
                 // （$gameScreen._flashColor[3] 或角色 _opacity 经存档后可能 undefined，
                 // setter 里 value.clamp(0,255) 崩；这是 clamp 报错的最终防线）
