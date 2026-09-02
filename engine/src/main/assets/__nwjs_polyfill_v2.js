@@ -752,10 +752,19 @@
                     };
                     window.Game_Actor.prototype.characterName.__tyranorV2Patched = true;
                 }
+                // $dataSystem.locale 缺失时补 "en"（Game_System.isJapanese 等 .match 防御）
+                if (typeof $dataSystem !== "undefined" && $dataSystem &&
+                    typeof $dataSystem.locale !== "string" && !$dataSystem.__localePatched) {
+                    try {
+                        $dataSystem.locale = "en";
+                        $dataSystem.__localePatched = true;
+                    } catch (eLocale) {}
+                }
                 // 全部就绪后停止轮询
                 if ((typeof window.Game_CharacterBase === "undefined" || (window.Game_CharacterBase.prototype.characterName && window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched)) &&
                     (typeof window.Game_Actor === "undefined" || (window.Game_Actor.prototype.characterName && window.Game_Actor.prototype.characterName.__tyranorV2Patched)) &&
-                    (typeof window.ImageManager === "undefined" || (window.ImageManager.isBigCharacter && window.ImageManager.isBigCharacter.__tyranorV2Patched))) {
+                    (typeof window.ImageManager === "undefined" || (window.ImageManager.isBigCharacter && window.ImageManager.isBigCharacter.__tyranorV2Patched)) &&
+                    (typeof $dataSystem === "undefined" || $dataSystem.__localePatched)) {
                     clearInterval(patchTimer);
                 }
             } catch (e) {}
