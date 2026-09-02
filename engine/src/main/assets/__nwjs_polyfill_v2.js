@@ -967,8 +967,10 @@
                 // setter 里 value.clamp(0,255) 崩；这是 clamp 报错的最终防线）
                 function guardOpacitySetter(proto, tag) {
                     try {
+                        // 标志挂 prototype 上，防重复安装（descriptor 上挂属性不持久）
+                        if (proto.__tyranorOpacityGuarded) return;
                         var desc = Object.getOwnPropertyDescriptor(proto, "opacity");
-                        if (!desc || desc.__tyranorV2Patched) return;
+                        if (!desc) return;
                         var origSet = desc.set;
                         var newDesc = {
                             get: desc.get,
@@ -983,8 +985,8 @@
                             },
                             configurable: true,
                         };
-                        newDesc.__tyranorV2Patched = true;
                         Object.defineProperty(proto, "opacity", newDesc);
+                        proto.__tyranorOpacityGuarded = true;
                         if (tag) { try { console.log("[v2] opacity guard installed: " + tag); } catch (e3) {} }
                     } catch (e) {}
                 }
@@ -995,11 +997,15 @@
                     guardOpacitySetter(window.ScreenSprite.prototype, "ScreenSprite");
                 }
                 // 全部就绪后停止轮询
+                // 注意：opacity 已由 guardOpacitySetter 内部描述符标志去重，停止条件不必包含它
+                // （此前包含 Sprite.opacity.__tyranorV2Patched，但属性描述符不可读该属性，
+                // 永远 false → patchTimer 永不停止 → 每 200ms 重新调 guardOpacitySetter，
+                // 但由于描述符已带 __tyranorV2Patched，guardOpacitySetter 直接 return，
+                // 仅产生日志噪音；真正的卡死/黑屏来自别处）
                 if ((typeof window.Game_CharacterBase === "undefined" || (window.Game_CharacterBase.prototype.characterName && window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched)) &&
                     (typeof window.Game_Actor === "undefined" || (window.Game_Actor.prototype.characterName && window.Game_Actor.prototype.characterName.__tyranorV2Patched)) &&
                     (typeof window.ImageManager === "undefined" || (window.ImageManager.isBigCharacter && window.ImageManager.isBigCharacter.__tyranorV2Patched)) &&
-                    (typeof $dataSystem === "undefined" || $dataSystem.__localePatched) &&
-                    (typeof window.Sprite === "undefined" || (window.Sprite.prototype.opacity && window.Sprite.prototype.opacity.__tyranorV2Patched))) {
+                    (typeof $dataSystem === "undefined" || $dataSystem.__localePatched)) {
                     clearInterval(patchTimer);
                 }
             } catch (e) {}
