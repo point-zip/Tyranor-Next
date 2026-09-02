@@ -446,6 +446,13 @@
                         }
                     } catch (eScr) {}
                 }
+                // $gameParty._actors（队伍成员 ID 数组，map 前需确保是真实 Array）
+                if (typeof $gameParty !== "undefined" && $gameParty && $gameParty._actors && !Array.isArray($gameParty._actors)) {
+                    try {
+                        $gameParty._actors = toArrayIfNeeded($gameParty._actors);
+                        if (!Array.isArray($gameParty._actors)) $gameParty._actors = [];
+                    } catch (ePm) { try { $gameParty._actors = []; } catch (ePm2) {} }
+                }
                 // $gameActors._data
                 if (typeof $gameActors !== "undefined" && $gameActors && $gameActors._data && typeof $gameActors._data.filter !== "function") {
                     try { $gameActors._data = toArrayIfNeeded($gameActors._data); } catch (e11) {}
