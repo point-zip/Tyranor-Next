@@ -920,32 +920,40 @@
                     window.Spriteset_Base.prototype.updateToneChanger.__tyranorV2Patched = true;
                 }
                 // Spriteset_Map.updateShadow 防御：airship（$gameMap.airship()）可能退化
-                // 为 plain object（Array 原型丢失 → shadowX 方法不存在 → TypeError）
-                if (typeof window.Spriteset_Map !== "undefined" && typeof window.Spriteset_Map.prototype.updateShadow === "function" &&
-                    !window.Spriteset_Map.prototype.updateShadow.__tyranorV2Patched) {
-                    var origUpdateShadow = window.Spriteset_Map.prototype.updateShadow;
-                    window.Spriteset_Map.prototype.updateShadow = function () {
-                        try {
-                            // 确保 airship 是真实 Game_Vehicle（有 shadowX 等）
-                            var airship = $gameMap.airship();
-                            if (airship && typeof airship.shadowX !== "function" && typeof window.Game_Vehicle !== "undefined") {
-                                try { Object.setPrototypeOf(airship, window.Game_Vehicle.prototype); } catch (eSh) {}
-                                if (typeof airship.shadowX !== "function") {
-                                    // 彻底退化：重置 _vehicles 槽位
-                                    try {
-                                        $gameMap._vehicles[2] = new window.Game_Vehicle("airship");
-                                        airship = $gameMap._vehicles[2];
-                                    } catch (eSh2) { return; }
+                // 为 plain object 或 null（_vehicles[2] 槽位在存档中丢失 → 方法不存在 → TypeError）
+                // 注意：__tyranorV2Patched 标志必须设在 game 原始方法上，不能用替换后的方法名，
+                // 否则下一次轮询看到自己的标志误判"已补丁"，导致替换永不生效
+                if (typeof window.Spriteset_Map !== "undefined" && typeof window.Spriteset_Map.prototype.updateShadow === "function") {
+                    // 检测 game 原始方法是否已被替换（用闭包标记而非属性，避免被误判）
+                    var shadowKey = "_tyranorV2ShadowHooked";
+                    if (!window.Spriteset_Map.prototype[shadowKey]) {
+                        var origUpdateShadow = window.Spriteset_Map.prototype.updateShadow;
+                        var newUpdateShadow = function () {
+                            try {
+                                // 确保 airship 是真实 Game_Vehicle（有 shadowX 等）；null/undefined 直接重建
+                                var airship = null;
+                                try { airship = $gameMap.airship(); } catch (eA) {}
+                                if (!airship || typeof airship.shadowX !== "function") {
+                                    if (typeof window.Game_Vehicle !== "undefined") {
+                                        try {
+                                            $gameMap._vehicles[2] = new window.Game_Vehicle("airship");
+                                            airship = $gameMap._vehicles[2];
+                                        } catch (eSh2) { airship = null; }
+                                    }
                                 }
-                            }
-                            if (!airship || typeof airship.shadowX !== "function") {
-                                console.warn("[nw-polyfill-v2] updateShadow: airship degraded, skipping");
-                                return;
-                            }
-                            return origUpdateShadow.call(this);
-                        } catch (e) {}
-                    };
-                    window.Spriteset_Map.prototype.updateShadow.__tyranorV2Patched = true;
+                                if (airship && typeof airship.shadowX !== "function" && typeof window.Game_Vehicle !== "undefined") {
+                                    try { Object.setPrototypeOf(airship, window.Game_Vehicle.prototype); } catch (eSh) {}
+                                }
+                                if (!airship || typeof airship.shadowX !== "function") {
+                                    console.warn("[nw-polyfill-v2] updateShadow: airship degraded, skipping");
+                                    return;
+                                }
+                                return origUpdateShadow.call(this);
+                            } catch (e) {}
+                        };
+                        window.Spriteset_Map.prototype.updateShadow = newUpdateShadow;
+                        window.Spriteset_Map.prototype[shadowKey] = true;
+                    }
                 }
                 // Sprite/ScreenSprite opacity setter 防御：value 非有限数字 → 0
                 // （$gameScreen._flashColor[3] 或角色 _opacity 经存档后可能 undefined，
