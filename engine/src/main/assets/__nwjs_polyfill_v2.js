@@ -369,30 +369,39 @@
                     if ($gameMap._vehicles && typeof $gameMap._vehicles.forEach !== "function") {
                         try { $gameMap._vehicles = toArrayIfNeeded($gameMap._vehicles); } catch (e8) {}
                     }
-                    // _vehicles[2]（airship）槽位在 JsonEx 解码时可能丢成 undefined：
-                    // Spriteset_Map.initialize 同步走 updateShadow → airship.shadowX() 崩。
-                    // 必须在同步路径（loadGame 出口 / extractSaveContents 完成后）就重建，
+                    // _vehicles 三槽（boat/ship/airship）在 JsonEx 解码时可能各自丢成
+                    // undefined 或原型退化：createCharacters 会为每个 vehicle new
+                    // Sprite_Character → updateVisibility → vehicle.isTransparent() 崩。
+                    // 必须在同步路径（loadGame 出口 / extractSaveContents 完成后）就修复，
                     // setInterval 轮询插不进 Spriteset_Map 初始化栈。
                     try {
-                        if (!$gameMap._vehicles || $gameMap._vehicles.length < 3) {
-                            $gameMap._vehicles = [$gameMap._vehicles ? $gameMap._vehicles[0] : undefined,
-                                $gameMap._vehicles ? $gameMap._vehicles[1] : undefined, undefined];
+                        if (!$gameMap._vehicles || typeof $gameMap._vehicles.forEach !== "function") {
+                            $gameMap._vehicles = [];
                         }
-                        var airshipObj = $gameMap._vehicles[2];
-                        if (!airshipObj || typeof airshipObj.shadowX !== "function") {
-                            if (typeof window.Game_Vehicle !== "undefined") {
-                                try {
-                                    var newShip = new window.Game_Vehicle("airship");
-                                    newShip.setMapId($gameMap.mapId());
-                                    $gameMap._vehicles[2] = newShip;
-                                } catch (eAir) {}
-                            }
-                        } else if (typeof $gameMap.airship !== "function" || $gameMap.airship() !== airshipObj) {
-                            // 原型已退化但方法存在 → 保险
-                            if ($gameMap._vehicles[2] && typeof $gameMap._vehicles[2].isAirship !== "function" && typeof window.Game_Vehicle !== "undefined") {
-                                try { Object.setPrototypeOf($gameMap._vehicles[2], window.Game_Vehicle.prototype); } catch (eAir2) {}
+                        // 三个槽位类型固定：0=boat 1=ship 2=airship
+                        var vhTypes = ["boat", "ship", "airship"];
+                        for (var vti = 0; vti < 3; vti++) {
+                            var vhCur = $gameMap._vehicles[vti];
+                            if (!vhCur || typeof vhCur.isTransparent !== "function") {
+                                // 重建整个 vehicle（new Game_Vehicle 依赖 $dataSystem，
+                                // 若 $dataSystem 未就绪则仅 setPrototypeOf 兜底）
+                                if (typeof window.Game_Vehicle !== "undefined" && typeof $dataSystem !== "undefined" && $dataSystem) {
+                                    try {
+                                        var newVh = new window.Game_Vehicle(vhTypes[vti]);
+                                        newVh.setMapId($gameMap.mapId());
+                                        $gameMap._vehicles[vti] = newVh;
+                                        continue;
+                                    } catch (eVhNew) {}
+                                }
+                                if (vhCur && typeof window.Game_Vehicle !== "undefined") {
+                                    try { Object.setPrototypeOf(vhCur, window.Game_Vehicle.prototype); } catch (eVhProto) {}
+                                }
+                            } else if (vhCur._type === undefined || vhCur._type === null || vhCur._type === "") {
+                                // 对象健全但 _type 丢失 → 手动补类型（isBoat/isShip/isAirship 依赖它）
+                                try { vhCur._type = vhTypes[vti]; } catch (eVhType) {}
                             }
                         }
+                        $gameMap._vehicles.length = 3;
                     } catch (eAir3) {}
                     if ($gameMap._commonEvents && typeof $gameMap._commonEvents.forEach !== "function") {
                         try { $gameMap._commonEvents = toArrayIfNeeded($gameMap._commonEvents); } catch (e9) {}
@@ -875,6 +884,22 @@
                         } catch (e) { return ""; }
                     };
                     window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched = true;
+                }
+                // Game_CharacterBase.isTransparent 兜底：存档对象 _transparent 丢失 →
+                // return undefined（应返回 false）。Sprite_Character.updateVisibility
+                // 判断 if (this._character.isTransparent()) 时 undefined 是 falsy 不崩，
+                // 但防御性补齐，避免依赖 falsy 语义
+                if (typeof window.Game_CharacterBase !== "undefined" &&
+                    typeof window.Game_CharacterBase.prototype.isTransparent === "function" &&
+                    !window.Game_CharacterBase.prototype.isTransparent.__tyranorV2Patched) {
+                    var origTransp = window.Game_CharacterBase.prototype.isTransparent;
+                    window.Game_CharacterBase.prototype.isTransparent = function () {
+                        try {
+                            var v = origTransp.call(this);
+                            return v === undefined || v === null ? false : v;
+                        } catch (e) { return false; }
+                    };
+                    window.Game_CharacterBase.prototype.isTransparent.__tyranorV2Patched = true;
                 }
                 // ImageManager.isBigCharacter / isObjectCharacter 防御：filename 非字符串 → false
                 if (typeof window.ImageManager !== "undefined") {
