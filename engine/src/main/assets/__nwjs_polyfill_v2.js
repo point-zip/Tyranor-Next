@@ -243,280 +243,248 @@
         }
 ]; } catch (e3) {}
 
-    // ---- 3959930_1.19 repro fix: loadGame returns JsonEx-parsed objects whose prototype
-    // can be stripped if the decompressed payload was null/truncated — then
-    // Scene_Map.create crashes on this._transfer = $gamePlayer.isTransferring().
-    // Keep the fix in v2 (never in base/v1): rehydrate + guard transfer on read.
+
+    // =====================================================================
+    // 存档反序列化修复（本质方案）
+    //
+    // 历史背景：此前 17 个 commit 沿"哪里崩补哪里"路线打了大量 per-class
+    // 症状补丁（events/vehicles/followers/actors/tone/updateShadow/...），
+    // 其中多个补丁自身还引入了新 bug（无限递归、poller 误停、null 赋值）。
+    // 本地用游戏自带 JsonEx 1.3.4 做全链路复现后确认：
+    //   1. JsonEx 1.3.4 编解码本身健全——数组保持真数组（JSON.parse 产物），
+    //      带 @ 标记的对象只要 window["@值"] 能查到构造器，原型即正确恢复；
+    //   2. 之前观察到的"原型丢失/plain object"只有一个来源：decode 时
+    //      window["@值"] 查不到构造器（或存档数据本身缺失）；
+    //   3. 毒存档（坏状态下保存）的 null 槽位是数据丢失，无法恢复，只能重建。
+    //
+    // 因此本节只保留两类逻辑：
+    //   A. JsonEx.parse 出口单点 rehydrate——覆盖所有对象的原型恢复（本质）；
+    //   B. repairGameObjects——毒存档数据丢失的字段/槽位兜底（数据重建）。
+    // =====================================================================
+
+    function rehydrateTree(value, depth) {
+        if (!value || typeof value !== "object") return value;
+        if (depth > 60) return value; // JsonEx.maxDepth=100，防御性限制
+        if (Array.isArray(value)) {
+            for (var i = 0; i < value.length; i++) {
+                if (value[i] && typeof value[i] === "object") value[i] = rehydrateTree(value[i], depth + 1);
+            }
+            return value;
+        }
+        var at = value["@"];
+        if (typeof at === "string") {
+            var ctor = window[at];
+            if (ctor) {
+                if (!(value instanceof ctor)) {
+                    try { Object.setPrototypeOf(value, ctor.prototype); } catch (e) {}
+                }
+            } else if (!value.__tyranorAtWarned) {
+                value.__tyranorAtWarned = true;
+                try { console.warn("[v2-diag] JsonEx rehydrate: no ctor for @" + at); } catch (e2) {}
+            }
+        }
+        for (var k in value) {
+            if (value.hasOwnProperty(k)) {
+                var child = value[k];
+                if (child && typeof child === "object") value[k] = rehydrateTree(child, depth + 1);
+            }
+        }
+        return value;
+    }
+
+    // JsonEx.parse hook：所有 JsonEx 反序列化（存档/config/global）出口统一 rehydrate
     (function () {
-        function toArrayIfNeeded(obj) {
-            if (!obj || typeof obj.filter === "function") return obj;
-            if (Array.isArray(obj)) return obj;
-            // JsonEx can produce plain object for sparse array: {0:..., 2:..., length?}
+        var parseTimer = setInterval(function () {
             try {
-                var arr = [];
-                var max = -1;
-                for (var k in obj) {
-                    if (!obj.hasOwnProperty(k)) continue;
-                    var n = parseInt(k, 10);
-                    if (String(n) === k && n >= 0) {
-                        arr[n] = obj[k];
-                        if (n > max) max = n;
-                    }
-                }
-                // preserve length if present
-                if (typeof obj.length === "number" && obj.length > max + 1) arr.length = obj.length;
-                return arr;
-            } catch (e) { return []; }
-        }
-        // 读档全链路诊断：loadGame 入口/出口、extractSaveContents 完成后关键槽位
-        // 状态、SceneManager.goto 目标——黑屏时日志可直接指出卡在哪一步
-        // repairGameObjects：对全局 $gamePlayer/$gameMap/$gameScreen 做原型与
-        // 稀疏数组修复。在 loadGame 出口调用（此时已是全局存档数据），
-        // 不依赖 extractSaveContents 劫持是否被 mod_core 覆盖。
-        // ensureCharacterDefaults：存档反序列化后 Game_CharacterBase 派生对象
-        // 可能缺 _opacity/_blendMode/_bushDepth 等字段，Sprite_Character.updateOther
-        // → opacity() 返回 undefined → Sprite.opacity setter 里 value.clamp(0,255)
-        // 崩（clamp 报错根因，同 match 的字段丢失问题）。
-        function ensureCharacterDefaults(obj) {
-            if (!obj) return;
-            var changed = false;
-            try {
-                if (obj._opacity === undefined || obj._opacity === null) { obj._opacity = 255; changed = true; }
-                if (obj._blendMode === undefined || obj._blendMode === null) { obj._blendMode = 0; changed = true; }
-                if (obj._bushDepth === undefined || obj._bushDepth === null) { obj._bushDepth = 0; changed = true; }
-                if (obj._characterName === undefined || obj._characterName === null) { obj._characterName = ""; changed = true; }
-                if (obj._characterIndex === undefined || obj._characterIndex === null) { obj._characterIndex = 0; changed = true; }
-                if (obj._tileId === undefined || obj._tileId === null) { obj._tileId = 0; changed = true; }
-                if (obj._direction === undefined || obj._direction === null) { obj._direction = 2; changed = true; }
-                if (obj._pattern === undefined || obj._pattern === null) { obj._pattern = 1; changed = true; }
-                if (obj._priorityType === undefined || obj._priorityType === null) { obj._priorityType = 1; changed = true; }
-                if (obj._walkAnime === undefined || obj._walkAnime === null) { obj._walkAnime = true; changed = true; }
-                if (obj._stepAnime === undefined || obj._stepAnime === null) { obj._stepAnime = false; changed = true; }
-                if (obj._directionFix === undefined || obj._directionFix === null) { obj._directionFix = false; changed = true; }
-                if (obj._through === undefined || obj._through === null) { obj._through = false; changed = true; }
-                if (obj._transparent === undefined || obj._transparent === null) { obj._transparent = false; changed = true; }
-                if (obj._moveSpeed === undefined || obj._moveSpeed === null) { obj._moveSpeed = 4; changed = true; }
-                if (obj._moveFrequency === undefined || obj._moveFrequency === null) { obj._moveFrequency = 6; changed = true; }
-                if (obj._animationId === undefined || obj._animationId === null) { obj._animationId = 0; changed = true; }
-                if (obj._balloonId === undefined || obj._balloonId === null) { obj._balloonId = 0; changed = true; }
-                if (obj._animationPlaying === undefined || obj._animationPlaying === null) { obj._animationPlaying = false; changed = true; }
-                if (obj._balloonPlaying === undefined || obj._balloonPlaying === null) { obj._balloonPlaying = false; changed = true; }
-                if (obj._animationCount === undefined || obj._animationCount === null) { obj._animationCount = 0; changed = true; }
-                if (obj._stopCount === undefined || obj._stopCount === null) { obj._stopCount = 0; changed = true; }
-                if (obj._jumpCount === undefined || obj._jumpCount === null) { obj._jumpCount = 0; changed = true; }
-                if (obj._jumpPeak === undefined || obj._jumpPeak === null) { obj._jumpPeak = 0; changed = true; }
-                if (obj._movementSuccess === undefined || obj._movementSuccess === null) { obj._movementSuccess = true; changed = true; }
-                return changed;
-            } catch (e) { return changed; }
-        }
-        function repairGameObjects() {
-            try {
-                if (typeof $gamePlayer === "undefined" || !$gamePlayer) return;
-                // $gamePlayer 原型 + 默认字段
-                if (typeof $gamePlayer.isTransferring !== "function" && typeof window.Game_Player !== "undefined") {
-                    try { Object.setPrototypeOf($gamePlayer, window.Game_Player.prototype); } catch (e) {}
-                }
-                ensureCharacterDefaults($gamePlayer);
-                // followers 原型 + _data 稀疏数组（_followers 缺失时也重建）
-                if (!$gamePlayer._followers) {
-                    if (typeof window.Game_Followers !== "undefined") {
-                        try { $gamePlayer._followers = new window.Game_Followers(); } catch (eFollow) {}
-                    }
-                }
-                if ($gamePlayer._followers) {
-                    if (typeof $gamePlayer._followers.reverseEach !== "function" && typeof window.Game_Followers !== "undefined") {
-                        try { Object.setPrototypeOf($gamePlayer._followers, window.Game_Followers.prototype); } catch (e2) {}
-                    }
-                    // _data 缺失或退化时重建为数组
-                    if (!$gamePlayer._followers._data || typeof $gamePlayer._followers._data.forEach !== "function") {
-                        try {
-                            $gamePlayer._followers._data = ($gamePlayer._followers._data && typeof $gamePlayer._followers._data === "object")
-                                ? toArrayIfNeeded($gamePlayer._followers._data)
-                                : [];
-                        } catch (e3) { try { $gamePlayer._followers._data = []; } catch (e3b) {} }
-                    }
-                    if ($gamePlayer._followers._data) {
-                        try {
-                            for (var fi = 0; fi < $gamePlayer._followers._data.length; fi++) {
-                                var flw = $gamePlayer._followers._data[fi];
-                                if (flw && typeof flw.isVisible !== "function" && typeof window.Game_Follower !== "undefined") {
-                                    try { Object.setPrototypeOf(flw, window.Game_Follower.prototype); } catch (e4) {}
-                                }
-                                ensureCharacterDefaults(flw);
-                            }
-                        } catch (e5) {}
-                    }
-                    // $gameParty 成员也可能退化（Sprite_Character 渲染队友时读 _opacity）
-                    if (typeof $gameParty !== "undefined" && $gameParty && typeof $gameParty.members === "function") {
-                        try {
-                            var partyMembers = $gameParty.members();
-                            if (partyMembers && typeof partyMembers.forEach === "function") {
-                                for (var pm = 0; pm < partyMembers.length; pm++) {
-                                    ensureCharacterDefaults(partyMembers[pm]);
-                                }
-                            }
-                        } catch (ePm) {}
-                    }
-                }
-                // $gameMap 原型 + 内部数组
-                if (typeof $gameMap !== "undefined" && $gameMap) {
-                    if (typeof $gameMap.mapId !== "function" && typeof window.Game_Map !== "undefined") {
-                        try { Object.setPrototypeOf($gameMap, window.Game_Map.prototype); } catch (e6) {}
-                    }
-                    if ($gameMap._events && typeof $gameMap._events.filter !== "function") {
-                        try { $gameMap._events = toArrayIfNeeded($gameMap._events); } catch (e7) {}
-                    }
-                    if ($gameMap._vehicles && typeof $gameMap._vehicles.forEach !== "function") {
-                        try { $gameMap._vehicles = toArrayIfNeeded($gameMap._vehicles); } catch (e8) {}
-                    }
-                    // _vehicles 三槽（boat/ship/airship）在 JsonEx 解码时可能各自丢成
-                    // undefined 或原型退化：createCharacters 会为每个 vehicle new
-                    // Sprite_Character → updateVisibility → vehicle.isTransparent() 崩；
-                    // updateShadow → airship.shadowX() 崩。
-                    // 必须在同步路径（loadGame 出口 / extractSaveContents 完成后）就修复，
-                    // setInterval 轮询插不进 Spriteset_Map 初始化栈。
-                    var vehStates = [];
+                if (typeof window.JsonEx === "undefined" || typeof window.JsonEx.parse !== "function") return;
+                if (window.JsonEx.parse.__tyranorV2Patched) { clearInterval(parseTimer); return; }
+                var origParse = window.JsonEx.parse;
+                window.JsonEx.parse = function (json) {
+                    // 存档原文诊断：_vehicles 节点原文（确认存档内容形态）
                     try {
-                        if (!$gameMap._vehicles || typeof $gameMap._vehicles.forEach !== "function") {
-                            $gameMap._vehicles = [];
+                        if (typeof json === "string") {
+                            var vi = json.indexOf("_vehicles");
+                            if (vi >= 0) {
+                                console.log("[v2-diag] save json _vehicles: " + json.substr(vi, 260));
+                            }
                         }
-                        // 三个槽位类型固定：0=boat 1=ship 2=airship
-                        var vhTypes = ["boat", "ship", "airship"];
-                        for (var vti = 0; vti < 3; vti++) {
-                            var vhCur = $gameMap._vehicles[vti];
-                            if (!vhCur || typeof vhCur.isTransparent !== "function") {
-                                var rebuilt = null;
-                                // 优先 new Game_Vehicle（依赖 $dataSystem 载具字段）
-                                if (typeof window.Game_Vehicle !== "undefined" && typeof $dataSystem !== "undefined" && $dataSystem) {
-                                    try {
-                                        rebuilt = new window.Game_Vehicle(vhTypes[vti]);
-                                        rebuilt.setMapId($gameMap.mapId());
-                                    } catch (eVhNew) { rebuilt = null; }
+                    } catch (eDiag) {}
+                    var result = origParse.call(this, json);
+                    try { rehydrateTree(result, 0); } catch (eRe) {}
+                    return result;
+                };
+                window.JsonEx.parse.__tyranorV2Patched = true;
+                clearInterval(parseTimer);
+            } catch (e) {}
+        }, 200);
+        setTimeout(function () { try { clearInterval(parseTimer); } catch (e) {} }, 10000);
+    })();
+
+    // ---- repairGameObjects：毒存档数据丢失的字段/槽位兜底 ----
+    // 仅处理 rehydrate 无法恢复的问题（null 槽位、缺失字段）；
+    // 原型恢复已全部由 rehydrateTree 在 JsonEx.parse 出口完成，此处不再重复。
+    function ensureCharacterDefaults(obj) {
+        if (!obj) return;
+        try {
+            if (obj._opacity === undefined || obj._opacity === null) { obj._opacity = 255; }
+            if (obj._blendMode === undefined || obj._blendMode === null) { obj._blendMode = 0; }
+            if (obj._bushDepth === undefined || obj._bushDepth === null) { obj._bushDepth = 0; }
+            if (obj._characterName === undefined || obj._characterName === null) { obj._characterName = ""; }
+            if (obj._characterIndex === undefined || obj._characterIndex === null) { obj._characterIndex = 0; }
+            if (obj._tileId === undefined || obj._tileId === null) { obj._tileId = 0; }
+            if (obj._direction === undefined || obj._direction === null) { obj._direction = 2; }
+            if (obj._pattern === undefined || obj._pattern === null) { obj._pattern = 1; }
+            if (obj._priorityType === undefined || obj._priorityType === null) { obj._priorityType = 1; }
+            if (obj._walkAnime === undefined || obj._walkAnime === null) { obj._walkAnime = true; }
+            if (obj._stepAnime === undefined || obj._stepAnime === null) { obj._stepAnime = false; }
+            if (obj._directionFix === undefined || obj._directionFix === null) { obj._directionFix = false; }
+            if (obj._through === undefined || obj._through === null) { obj._through = false; }
+            if (obj._transparent === undefined || obj._transparent === null) { obj._transparent = false; }
+            if (obj._moveSpeed === undefined || obj._moveSpeed === null) { obj._moveSpeed = 4; }
+            if (obj._moveFrequency === undefined || obj._moveFrequency === null) { obj._moveFrequency = 6; }
+            if (obj._animationId === undefined || obj._animationId === null) { obj._animationId = 0; }
+            if (obj._balloonId === undefined || obj._balloonId === null) { obj._balloonId = 0; }
+            if (obj._animationPlaying === undefined || obj._animationPlaying === null) { obj._animationPlaying = false; }
+            if (obj._balloonPlaying === undefined || obj._balloonPlaying === null) { obj._balloonPlaying = false; }
+            if (obj._animationCount === undefined || obj._animationCount === null) { obj._animationCount = 0; }
+            if (obj._stopCount === undefined || obj._stopCount === null) { obj._stopCount = 0; }
+            if (obj._jumpCount === undefined || obj._jumpCount === null) { obj._jumpCount = 0; }
+            if (obj._jumpPeak === undefined || obj._jumpPeak === null) { obj._jumpPeak = 0; }
+            if (obj._movementSuccess === undefined || obj._movementSuccess === null) { obj._movementSuccess = true; }
+        } catch (e) {}
+    }
+
+    function repairGameObjects() {
+        try {
+            if (typeof $gamePlayer === "undefined" || !$gamePlayer) return;
+            ensureCharacterDefaults($gamePlayer);
+            // _followers 整体缺失（毒存档）→ 重建（Game_Followers 构造器补齐 3 个 follower）
+            if (!$gamePlayer._followers && typeof window.Game_Followers !== "undefined") {
+                try { $gamePlayer._followers = new window.Game_Followers(); } catch (eFollow) {}
+            }
+            if ($gamePlayer._followers && $gamePlayer._followers._data) {
+                try {
+                    for (var fi = 0; fi < $gamePlayer._followers._data.length; fi++) {
+                        var flw = $gamePlayer._followers._data[fi];
+                        if (!flw && typeof window.Game_Follower !== "undefined") {
+                            // follower 槽位为 null（毒存档）→ 重建
+                            try { $gamePlayer._followers._data[fi] = new window.Game_Follower(fi); } catch (eF2) {}
+                        }
+                        ensureCharacterDefaults($gamePlayer._followers._data[fi]);
+                    }
+                } catch (e5) {}
+            }
+            // 队伍成员字段兜底（Sprite_Character 渲染队友时读 _opacity）
+            if (typeof $gameParty !== "undefined" && $gameParty && typeof $gameParty.members === "function") {
+                try {
+                    var partyMembers = $gameParty.members();
+                    if (partyMembers && typeof partyMembers.forEach === "function") {
+                        for (var pm = 0; pm < partyMembers.length; pm++) {
+                            ensureCharacterDefaults(partyMembers[pm]);
+                        }
+                    }
+                } catch (ePm) {}
+            }
+            if (typeof $gameMap !== "undefined" && $gameMap) {
+                // 地图内事件字段兜底
+                if ($gameMap._events) {
+                    try {
+                        for (var ei = 0; ei < $gameMap._events.length; ei++) {
+                            ensureCharacterDefaults($gameMap._events[ei]);
+                        }
+                    } catch (eEv2) {}
+                }
+                // _vehicles 三槽兜底（毒存档 null 槽位是数据丢失，只能重建）
+                var vehStates = [];
+                try {
+                    if (!$gameMap._vehicles || typeof $gameMap._vehicles.forEach !== "function") {
+                        $gameMap._vehicles = [];
+                    }
+                    var vhTypes = ["boat", "ship", "airship"];
+                    for (var vti = 0; vti < 3; vti++) {
+                        var vhCur = $gameMap._vehicles[vti];
+                        if (!vhCur || typeof vhCur.isTransparent !== "function") {
+                            var rebuilt = null;
+                            if (vhCur && typeof window.Game_Vehicle !== "undefined") {
+                                try {
+                                    Object.setPrototypeOf(vhCur, window.Game_Vehicle.prototype);
+                                    rebuilt = vhCur;
+                                } catch (eVhProto) { rebuilt = null; }
+                            }
+                            if (!rebuilt && typeof window.Game_Vehicle !== "undefined" && typeof $dataSystem !== "undefined" && $dataSystem) {
+                                try {
+                                    rebuilt = new window.Game_Vehicle(vhTypes[vti]);
+                                } catch (eVhNew) {
+                                    rebuilt = null;
+                                    try { console.warn("[v2-diag] new Game_Vehicle('" + vhTypes[vti] + "') failed: " + (eVhNew && eVhNew.message)); } catch (eVhLog2) {}
                                 }
-                                // new 失败（$dataSystem 载具字段缺失/结构异常）→ 手搓最小 vehicle：
-                                // Object.create + initMembers（纯字段赋值，不依赖 $dataSystem），
-                                // 方法全部来自原型，shadowX/isTransparent 均可用
-                                if (!rebuilt && vhCur && typeof window.Game_Vehicle !== "undefined") {
-                                    try {
-                                        Object.setPrototypeOf(vhCur, window.Game_Vehicle.prototype);
-                                        if (typeof vhCur.initMembers === "function") {
-                                            try { vhCur.initMembers(); } catch (eInit) {}
-                                        }
-                                        if (vhCur._type === undefined || vhCur._type === null || vhCur._type === "") {
-                                            vhCur._type = vhTypes[vti];
-                                        }
-                                        rebuilt = vhCur;
-                                    } catch (eVhProto) { rebuilt = vhCur || null; }
+                            }
+                            if (!rebuilt && typeof window.Game_Vehicle !== "undefined") {
+                                try {
+                                    rebuilt = Object.create(window.Game_Vehicle.prototype);
+                                    if (typeof rebuilt.initMembers === "function") {
+                                        try { rebuilt.initMembers(); } catch (eInit) {}
+                                    }
+                                    rebuilt._type = vhTypes[vti];
+                                } catch (eVhMan) { rebuilt = null; }
+                            }
+                            if (rebuilt) {
+                                if (typeof rebuilt.setMapId === "function" && typeof $gameMap.mapId === "function") {
+                                    try { rebuilt.setMapId($gameMap.mapId()); } catch (eVhMap) {}
                                 }
                                 $gameMap._vehicles[vti] = rebuilt;
-                            } else if (vhCur._type === undefined || vhCur._type === null || vhCur._type === "") {
-                                // 对象健全但 _type 丢失 → 按槽位补类型（isBoat/isShip/isAirship 依赖它）
-                                try { vhCur._type = vhTypes[vti]; } catch (eVhType) {}
                             }
-                            var vhFinal = $gameMap._vehicles[vti];
-                            vehStates.push(vhFinal && typeof vhFinal.shadowX === "function" ? "ok" : "BAD");
+                        } else if (vhCur._type === undefined || vhCur._type === null || vhCur._type === "") {
+                            try { vhCur._type = vhTypes[vti]; } catch (eVhType) {}
                         }
-                        $gameMap._vehicles.length = 3;
-                    } catch (eAir3) {}
-                    // 诊断：总是输出三槽状态，下次日志可直接判断重建是否生效
-                    try { console.log("[v2-diag] vehicles repaired: " + vehStates.join(",") +
-                        " airship.shadowX=" + (typeof ($gameMap._vehicles && $gameMap._vehicles[2] && $gameMap._vehicles[2].shadowX))); } catch (eVhLog) {}
-                    if ($gameMap._commonEvents && typeof $gameMap._commonEvents.forEach !== "function") {
-                        try { $gameMap._commonEvents = toArrayIfNeeded($gameMap._commonEvents); } catch (e9) {}
+                        var vhFinal = $gameMap._vehicles[vti];
+                        vehStates.push(vhFinal && typeof vhFinal.shadowX === "function" ? "ok" : "BAD");
                     }
-                    // 地图内事件/载具对象逐个补角色默认字段（_opacity 等）
-                    // Sprite_Character.updateOther → opacity() → _opacity undefined →
-                    // Sprite.opacity setter 里 value.clamp(0,255) 崩（clamp 报错根因）
-                    if ($gameMap._events) {
-                        try {
-                            for (var ei = 0; ei < $gameMap._events.length; ei++) {
-                                var evObj = $gameMap._events[ei];
-                                if (evObj) {
-                                    if (typeof evObj.isErased !== "function" && typeof window.Game_Event !== "undefined") {
-                                        try { Object.setPrototypeOf(evObj, window.Game_Event.prototype); } catch (eEv) {}
-                                    }
-                                    ensureCharacterDefaults(evObj);
-                                }
-                            }
-                        } catch (eEv2) {}
+                    $gameMap._vehicles.length = 3;
+                } catch (eAir3) {}
+                try { console.log("[v2-diag] vehicles repaired: " + vehStates.join(",") +
+                    " airship=" + (typeof $gameMap._vehicles[2]) + "/shadowX=" +
+                    (typeof ($gameMap._vehicles[2] && $gameMap._vehicles[2].shadowX))); } catch (eVhLog) {}
+            }
+            // $gameScreen 关键字段兜底（_flashColor 缺失 → flashColor()[3] undefined →
+            // ScreenSprite.opacity setter 里 value.clamp 崩）
+            if (typeof $gameScreen !== "undefined" && $gameScreen) {
+                try {
+                    if (!Array.isArray($gameScreen._flashColor) || $gameScreen._flashColor.length < 4) {
+                        $gameScreen._flashColor = [0, 0, 0, 0];
                     }
-                    if ($gameMap._vehicles) {
-                        try {
-                            for (var vi2 = 0; vi2 < $gameMap._vehicles.length; vi2++) {
-                                var vhObj = $gameMap._vehicles[vi2];
-                                if (vhObj) {
-                                    if (typeof vhObj.isAirship !== "function" && typeof window.Game_Vehicle !== "undefined") {
-                                        try { Object.setPrototypeOf(vhObj, window.Game_Vehicle.prototype); } catch (eVh) {}
-                                    }
-                                    ensureCharacterDefaults(vhObj);
-                                }
-                            }
-                        } catch (eVh2) {}
-                    }
-                    if ($gameMap._commonEvents) {
-                        try {
-                            for (var ci = 0; ci < $gameMap._commonEvents.length; ci++) {
-                                var ceObj = $gameMap._commonEvents[ci];
-                                if (ceObj && typeof ceObj.refresh !== "function" && typeof window.Game_CommonEvent !== "undefined") {
-                                    try { Object.setPrototypeOf(ceObj, window.Game_CommonEvent.prototype); } catch (eCe) {}
-                                }
-                            }
-                        } catch (eCe2) {}
-                    }
-                }
-                // $gameScreen._pictures 稀疏数组 + 关键字段兜底
-                // （_flashColor 缺失 → flashColor()[3] undefined →
-                // ScreenSprite.opacity setter value.clamp 崩）
-                if (typeof $gameScreen !== "undefined" && $gameScreen) {
-                    if ($gameScreen._pictures && typeof $gameScreen._pictures.forEach !== "function") {
-                        try { $gameScreen._pictures = toArrayIfNeeded($gameScreen._pictures); } catch (e10) {}
-                    }
-                    try {
-                        if (!Array.isArray($gameScreen._flashColor) || $gameScreen._flashColor.length < 4) {
-                            $gameScreen._flashColor = [0, 0, 0, 0];
-                        }
-                        if ($gameScreen._brightness === undefined || $gameScreen._brightness === null) {
-                            $gameScreen._brightness = 255;
-                        }
-                        if ($gameScreen._fadeOutDuration === undefined || $gameScreen._fadeOutDuration === null) { $gameScreen._fadeOutDuration = 0; }
-                        if ($gameScreen._fadeInDuration === undefined || $gameScreen._fadeInDuration === null) { $gameScreen._fadeInDuration = 0; }
-                        if ($gameScreen._tone === undefined || $gameScreen._tone === null || typeof $gameScreen._tone.clone !== 'function') { $gameScreen._tone = [0, 0, 0, 0]; }
-                        if ($gameScreen._shakePower === undefined || $gameScreen._shakePower === null) { $gameScreen._shakePower = 0; }
-                        if ($gameScreen._shakeSpeed === undefined || $gameScreen._shakeSpeed === null) { $gameScreen._shakeSpeed = 0; }
-                        if ($gameScreen._shakeDuration === undefined || $gameScreen._shakeDuration === null) { $gameScreen._shakeDuration = 0; }
-                        if ($gameScreen._shakeDirection === undefined || $gameScreen._shakeDirection === null) { $gameScreen._shakeDirection = 1; }
-                        if ($gameScreen._zoomX === undefined || $gameScreen._zoomX === null) { $gameScreen._zoomX = 0; }
-                        if ($gameScreen._zoomY === undefined || $gameScreen._zoomY === null) { $gameScreen._zoomY = 0; }
-                        if ($gameScreen._zoomScale === undefined || $gameScreen._zoomScale === null) { $gameScreen._zoomScale = 1; }
-                        if ($gameScreen._zoomScaleX === undefined || $gameScreen._zoomScaleX === null) { $gameScreen._zoomScaleX = 1; }
-                        if ($gameScreen._zoomScaleY === undefined || $gameScreen._zoomScaleY === null) { $gameScreen._zoomScaleY = 1; }
-                        if ($gameScreen._weatherType === undefined || $gameScreen._weatherType === null) { $gameScreen._weatherType = "none"; }
-                        if ($gameScreen._weatherPower === undefined || $gameScreen._weatherPower === null) { $gameScreen._weatherPower = 0; }
-                        if ($gameScreen._pictures === undefined || $gameScreen._pictures === null) { $gameScreen._pictures = []; }
-                        if (typeof $gameScreen.clear === "function" && $gameScreen._weatherPower === 0 && !$gameScreen._weatherType) {
-                            // no-op
-                        }
-                    } catch (eScr) {}
-                }
-                // $gameParty._actors（队伍成员 ID 数组，map 前需确保是真实 Array）
-                if (typeof $gameParty !== "undefined" && $gameParty && $gameParty._actors && !Array.isArray($gameParty._actors)) {
-                    try {
-                        $gameParty._actors = toArrayIfNeeded($gameParty._actors);
-                        if (!Array.isArray($gameParty._actors)) $gameParty._actors = [];
-                    } catch (ePm) { try { $gameParty._actors = []; } catch (ePm2) {} }
-                }
-                // $gameActors._data
-                if (typeof $gameActors !== "undefined" && $gameActors && $gameActors._data && typeof $gameActors._data.filter !== "function") {
-                    try { $gameActors._data = toArrayIfNeeded($gameActors._data); } catch (e11) {}
-                }
-                // $gameSystem 关键字段兜底（sys.locale 已单独兜，这里补 _saveEnabled 等）
-                if (typeof $gameSystem !== "undefined" && $gameSystem) {
-                    try {
-                        if (typeof $gameSystem.locale !== "string") { $gameSystem.locale = "en"; }
-                    } catch (eSys) {}
-                }
-            } catch (e) {}
-        }
+                    if ($gameScreen._brightness === undefined || $gameScreen._brightness === null) { $gameScreen._brightness = 255; }
+                    if ($gameScreen._tone === undefined || $gameScreen._tone === null || typeof $gameScreen._tone.clone !== "function") { $gameScreen._tone = [0, 0, 0, 0]; }
+                    if ($gameScreen._pictures === undefined || $gameScreen._pictures === null) { $gameScreen._pictures = []; }
+                    if ($gameScreen._shakePower === undefined || $gameScreen._shakePower === null) { $gameScreen._shakePower = 0; }
+                    if ($gameScreen._shakeDuration === undefined || $gameScreen._shakeDuration === null) { $gameScreen._shakeDuration = 0; }
+                    if ($gameScreen._shakeDirection === undefined || $gameScreen._shakeDirection === null) { $gameScreen._shakeDirection = 1; }
+                    if ($gameScreen._zoomX === undefined || $gameScreen._zoomX === null) { $gameScreen._zoomX = 0; }
+                    if ($gameScreen._zoomY === undefined || $gameScreen._zoomY === null) { $gameScreen._zoomY = 0; }
+                    if ($gameScreen._zoomScale === undefined || $gameScreen._zoomScale === null) { $gameScreen._zoomScale = 1; }
+                    if ($gameScreen._weatherType === undefined || $gameScreen._weatherType === null) { $gameScreen._weatherType = "none"; }
+                    if ($gameScreen._weatherPower === undefined || $gameScreen._weatherPower === null) { $gameScreen._weatherPower = 0; }
+                } catch (eScr) {}
+            }
+            // $gameParty._actors / $gameActors._data 缺失兜底（毒存档）
+            if (typeof $gameParty !== "undefined" && $gameParty && (!$gameParty._actors || typeof $gameParty._actors.filter !== "function")) {
+                try { $gameParty._actors = []; } catch (ePa) {}
+            }
+            if (typeof $gameActors !== "undefined" && $gameActors && (!$gameActors._data || typeof $gameActors._data.filter !== "function")) {
+                try { $gameActors._data = []; } catch (eAc) {}
+            }
+            // locale 兜底（Game_System.isJapanese 等 .match 防御）
+            if (typeof $dataSystem !== "undefined" && $dataSystem && typeof $dataSystem.locale !== "string") {
+                try { $dataSystem.locale = "en"; } catch (eLocale) {}
+            }
+            if (typeof $gameSystem !== "undefined" && $gameSystem && typeof $gameSystem.locale !== "string") {
+                try { $gameSystem.locale = "en"; } catch (eSys) {}
+            }
+        } catch (e) {}
+    }
+
+    // ---- loadGame 诊断 hook（验证期保留，问题闭环后可移除）----
+    (function () {
         var loadDiagTimer = setInterval(function () {
             try {
                 if (typeof window.DataManager === "undefined" || typeof window.DataManager.loadGame !== "function") return;
@@ -526,14 +494,12 @@
                     console.log("[v2-diag] loadGame enter savefileId=" + savefileId);
                     try {
                         var ret = origLoadGame.call(this, savefileId);
-                        // 出口修复：mod_core 可能覆盖 extractSaveContents，故直接修全局对象
                         repairGameObjects();
                         console.log("[v2-diag] loadGame exit ret=" + ret +
-                            " player.isTransferring=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && typeof $gamePlayer.isTransferring === "function" ? $gamePlayer.isTransferring() : "MISSING") +
+                            " player.isTransferring=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && typeof $gamePlayer.isTransferring === "function" ? "fn" : "MISSING") +
                             " map.mapId=" + (typeof $gameMap !== "undefined" && $gameMap && typeof $gameMap.mapId === "function" ? $gameMap.mapId() : "MISSING") +
-                            " events.filter=" + (typeof $gameMap !== "undefined" && $gameMap && $gameMap._events && typeof $gameMap._events.filter === "function" ? "ok" : "BROKEN") +
-                            " vehicles.forEach=" + (typeof $gameMap !== "undefined" && $gameMap && $gameMap._vehicles && typeof $gameMap._vehicles.forEach === "function" ? "ok" : "BROKEN") +
-                            " followers._data=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && $gamePlayer._followers && $gamePlayer._followers._data && typeof $gamePlayer._followers._data.forEach === "function" ? "ok" : "BROKEN"));
+                            " vehicles=" + (typeof $gameMap !== "undefined" && $gameMap && $gameMap._vehicles && typeof $gameMap._vehicles.forEach === "function" ? "ok" : "BROKEN") +
+                            " followers=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && $gamePlayer._followers && typeof $gamePlayer._followers.reverseEach === "function" ? "ok" : "BROKEN"));
                         return ret;
                     } catch (e) {
                         console.error("[v2-diag] loadGame threw", e && e.stack ? e.stack : e);
@@ -545,130 +511,18 @@
             } catch (e) {}
         }, 200);
         setTimeout(function () { try { clearInterval(loadDiagTimer); } catch (e) {} }, 10000);
-        // SceneManager.goto 目标记录：读档成功/失败最终切到哪个场景
-        var gotoDiagTimer = setInterval(function () {
-            try {
-                if (typeof window.SceneManager === "undefined" || typeof window.SceneManager.goto !== "function") return;
-                if (SceneManager.goto.__tyranorV2Diag) { clearInterval(gotoDiagTimer); return; }
-                var origGoto = SceneManager.goto;
-                SceneManager.goto = function (sceneClass) {
-                    try { console.log("[v2-diag] SceneManager.goto -> " + (sceneClass && sceneClass.name ? sceneClass.name : sceneClass)); } catch (e2) {}
-                    try { return origGoto.call(this, sceneClass); } catch (e3) {
-                        console.error("[v2-diag] SceneManager.goto threw", e3 && e3.stack ? e3.stack : e3);
-                        throw e3;
-                    }
-                };
-                SceneManager.goto.__tyranorV2Diag = true;
-                clearInterval(gotoDiagTimer);
-            } catch (e) {}
-        }, 200);
-        setTimeout(function () { try { clearInterval(gotoDiagTimer); } catch (e) {} }, 10000);
+    })();
+
+    // extractSaveContents hook：出口同步 repairGameObjects（loadGame 出口之外的第二调用点）
+    (function () {
         var timer = setInterval(function () {
             try {
                 if (typeof window.DataManager === "undefined" || typeof window.DataManager.extractSaveContents !== "function") return;
                 if (DataManager.extractSaveContents.__tyranorV2Patched) { clearInterval(timer); return; }
                 var orig = DataManager.extractSaveContents;
                 DataManager.extractSaveContents = function (contents) {
-                    try {
-                        // Hardened rehydration: if JsonEx produced plain objects, restore prototypes.
-                        // Game_Player/Game_Map et al are already defined when loadGame runs.
-                        if (contents && contents.player && typeof contents.player.isTransferring !== "function" && typeof window.Game_Player !== "undefined") {
-                            try {
-                                var proto = window.Game_Player.prototype;
-                                if (!contents.player.__proto__ || contents.player.__proto__ === Object.prototype) {
-                                    Object.setPrototypeOf(contents.player, proto);
-                                }
-                            } catch (e2) {}
-                        }
-                        if (contents && contents.map) {
-                            if (typeof contents.map.mapId !== "function" && typeof window.Game_Map !== "undefined") {
-                                try { Object.setPrototypeOf(contents.map, window.Game_Map.prototype); } catch (e3) {}
-                            }
-                            // _events is the array that later triggers "filter is not a function"
-                            try {
-                                if (contents.map._events && typeof contents.map._events.filter !== "function") {
-                                    contents.map._events = toArrayIfNeeded(contents.map._events);
-                                }
-                                // also rehydrate each Game_Event inside _events if needed
-                                if (contents.map._events && typeof window.Game_Event !== "undefined") {
-                                    for (var i = 0; i < contents.map._events.length; i++) {
-                                        var ev = contents.map._events[i];
-                                        if (ev && typeof ev.findProperPageIndex !== "function") {
-                                            try { Object.setPrototypeOf(ev, window.Game_Event.prototype); } catch (e4) {}
-                                        }
-                                    }
-                                }
-                            } catch (e5) {}
-                            // _vehicles shares the same sparse-array degradation path as _events
-                            try {
-                                if (contents.map._vehicles && typeof contents.map._vehicles.forEach !== "function") {
-                                    contents.map._vehicles = toArrayIfNeeded(contents.map._vehicles);
-                                }
-                                if (contents.map._vehicles && typeof window.Game_Vehicle !== "undefined") {
-                                    for (var vi = 0; vi < contents.map._vehicles.length; vi++) {
-                                        var ve = contents.map._vehicles[vi];
-                                        if (ve && typeof ve.isAirship !== "function") {
-                                            try { Object.setPrototypeOf(ve, window.Game_Vehicle.prototype); } catch (e6) {}
-                                        }
-                                    }
-                                }
-                            } catch (e7) {}
-                            // _commonEvents in the same save slot can also degrade
-                            try {
-                                if (contents.map._commonEvents && typeof contents.map._commonEvents.forEach !== "function") {
-                                    contents.map._commonEvents = toArrayIfNeeded(contents.map._commonEvents);
-                                }
-                            } catch (e8) {}
-                            // Generic sweep: other sparse arrays in the same save (screen/actors/followers)
-                            try {
-                                // Game_Screen._pictures: 1..100 sparse, hit as _pictures.forEach
-                                if (contents.screen && contents.screen._pictures && typeof contents.screen._pictures.forEach !== "function") {
-                                    contents.screen._pictures = toArrayIfNeeded(contents.screen._pictures);
-                                }
-                                // Game_Actors._data: actorId holes
-                                if (contents.actors && contents.actors._data && typeof contents.actors._data.filter !== "function") {
-                                    contents.actors._data = toArrayIfNeeded(contents.actors._data);
-                                }
-                                // Game_Player._followers._data is nested inside player
-                                if (contents.player && contents.player._followers && contents.player._followers._data && typeof contents.player._followers._data.forEach !== "function") {
-                                    contents.player._followers._data = toArrayIfNeeded(contents.player._followers._data);
-                                }
-                                // Game_Followers itself may degrade to plain object (reverseEach undefined)
-                                if (contents.player && contents.player._followers && typeof contents.player._followers.reverseEach !== "function" && typeof window.Game_Followers !== "undefined") {
-                                    try { Object.setPrototypeOf(contents.player._followers, window.Game_Followers.prototype); } catch (e11) {}
-                                    // ensure inner _data is array after proto restore
-                                    if (contents.player._followers._data && typeof contents.player._followers._data.forEach !== "function") {
-                                        try { contents.player._followers._data = toArrayIfNeeded(contents.player._followers._data); } catch (e12) {}
-                                    }
-                                }
-                                // VisibleFollowers / areGathered path reads _data.filter etc.
-                                if (contents.player && contents.player._followers && contents.player._followers._data) {
-                                    try {
-                                        if (typeof contents.player._followers._data.filter !== "function") {
-                                            contents.player._followers._data = toArrayIfNeeded(contents.player._followers._data);
-                                        }
-                                    } catch (e13) {}
-                                }
-                                // Ensure $gameMap internals stay arrays even when accessed via $gameMap directly
-                                if (contents.map._interpreter && typeof contents.map._interpreter.setup !== "function" && typeof window.Game_Interpreter !== "undefined") {
-                                    try { Object.setPrototypeOf(contents.map._interpreter, window.Game_Interpreter.prototype); } catch (e9) {}
-                                }
-                            } catch (e10) {}
-                        }
-                    } catch (e) {}
                     var result = orig.call(this, contents);
-                    // 双保险：即使 mod_core 覆盖了本劫持，loadGame 出口也会调 repairGameObjects；
-                    // 这里在 extractSaveContents 正常路径也直接修全局对象
-                    repairGameObjects();
-                    // 读档后关键字段快照：配合全局错误捕获，直接指出读档后哪个槽位不健全
-                    try {
-                        var snap = "player.isTransferring=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && typeof $gamePlayer.isTransferring === "function" ? "ok" : "MISSING") +
-                            "|map.mapId=" + (typeof $gameMap !== "undefined" && $gameMap && typeof $gameMap.mapId === "function" ? "ok" : "MISSING") +
-                            "|sys.locale=" + (typeof $gameSystem !== "undefined" && $gameSystem && typeof $gameSystem.locale !== "undefined" ? (typeof $gameSystem.locale === "string" ? "ok:" + $gameSystem.locale : "nonstring") : "MISSING") +
-                            "|screen._pictures=" + (typeof $gameScreen !== "undefined" && $gameScreen && $gameScreen._pictures && typeof $gameScreen._pictures.forEach === "function" ? "ok" : "BROKEN") +
-                            "|followers._data=" + (typeof $gamePlayer !== "undefined" && $gamePlayer && $gamePlayer._followers && $gamePlayer._followers._data && typeof $gamePlayer._followers._data.forEach === "function" ? "ok" : "BROKEN");
-                        console.log("[v2-diag] extractSaveContents done: " + snap);
-                    } catch (eSnap) {}
+                    try { repairGameObjects(); } catch (eR) {}
                     return result;
                 };
                 DataManager.extractSaveContents.__tyranorV2Patched = true;
@@ -678,219 +532,10 @@
         setTimeout(function () { try { clearInterval(timer); } catch (e) {} }, 10000);
     })();
 
-    // Game_Map.events / vehicles guard: sparse arrays can degrade to plain objects
-    // after JsonEx decode — same class of bug as isTransferring; keep in v2 only.
-    (function () {
-        var timerE = setInterval(function () {
-            try {
-                if (typeof window.Game_Map === "undefined" || typeof window.Game_Map.prototype.events !== "function") return;
-                if (window.Game_Map.prototype.events.__tyranorV2Patched) { clearInterval(timerE); return; }
-                var origEvents = window.Game_Map.prototype.events;
-                function coerceSparseArray(holder, key) {
-                    var v = holder[key];
-                    if (v && typeof v === "object" && !Array.isArray(v) && typeof v.filter !== "function" && typeof v.forEach !== "function") {
-                        var arr = [];
-                        var max = -1;
-                        for (var k in v) {
-                            if (!v.hasOwnProperty(k)) continue;
-                            var n = parseInt(k, 10);
-                            if (String(n) === k && n >= 0) { arr[n] = v[k]; if (n > max) max = n; }
-                        }
-                        if (typeof v.length === "number" && v.length > max + 1) arr.length = v.length;
-                        holder[key] = arr;
-                    } else if (!v) {
-                        holder[key] = [];
-                    }
-                }
-                window.Game_Map.prototype.events = function () {
-                    try {
-                        if (!this._events || typeof this._events.filter !== "function") {
-                            coerceSparseArray(this, "_events");
-                            if (typeof this._events.filter !== "function") return [];
-                        }
-                    } catch (e) { try { this._events = []; } catch (e2) {} return []; }
-                    try { return origEvents.call(this); } catch (e3) {
-                        console.warn("[nw-polyfill-v2] Game_Map.events degraded, returning []", e3 && e3.message);
-                        return [];
-                    }
-                };
-                window.Game_Map.prototype.events.__tyranorV2Patched = true;
-                // vehicles() / refereshVehicles() share the same sparse-array slot
-                if (typeof window.Game_Map.prototype.vehicles === "function" && !window.Game_Map.prototype.vehicles.__tyranorV2Patched) {
-                    var origVehicles = window.Game_Map.prototype.vehicles;
-                    window.Game_Map.prototype.vehicles = function () {
-                        try { coerceSparseArray(this, "_vehicles"); } catch (e5) {}
-                        try { return origVehicles.call(this); } catch (e6) { return this._vehicles && Array.isArray(this._vehicles) ? this._vehicles : []; }
-                    };
-                    window.Game_Map.prototype.vehicles.__tyranorV2Patched = true;
-                }
-                if (typeof window.Game_Map.prototype.refereshVehicles === "function" && !window.Game_Map.prototype.refereshVehicles.__tyranorV2Patched) {
-                    var origRefreshVehicles = window.Game_Map.prototype.refereshVehicles;
-                    window.Game_Map.prototype.refereshVehicles = function () {
-                        try { coerceSparseArray(this, "_vehicles"); } catch (e7) {}
-                        var arr = this._vehicles;
-                        if (!arr || typeof arr.forEach !== "function") {
-                            console.warn("[nw-polyfill-v2] _vehicles degraded, skipping refereshVehicles");
-                            return;
-                        }
-                        try { return origRefreshVehicles.call(this); } catch (e8) {
-                            console.warn("[nw-polyfill-v2] refereshVehicles degraded", e8 && e8.message);
-                        }
-                    };
-                    window.Game_Map.prototype.refereshVehicles.__tyranorV2Patched = true;
-                }
-                function ensureFollowersData(host) {
-                    if (!host) return;
-                    var f = null;
-                    // 注意：必须直接访问 _followers 字段，不能调 host.followers()
-                    // （followers() 已被下方劫持并回调 ensureFollowersData，会造成无限递归）
-                    try { f = host._followers; } catch (e) { f = null; }
-                    if (!f) {
-                        if (typeof window.Game_Followers !== "undefined") {
-                            try { host._followers = new window.Game_Followers(); f = host._followers; } catch (e2) { return; }
-                        } else return;
-                    }
-                    if (typeof f.reverseEach !== "function" && typeof window.Game_Followers !== "undefined") {
-                        try { Object.setPrototypeOf(f, window.Game_Followers.prototype); } catch (e3) {}
-                    }
-                    if (!f._data || typeof f._data.forEach !== "function") {
-                        try { coerceSparseArray(f, "_data"); } catch (e4) {}
-                    }
-                    if (!f._data) { try { f._data = []; } catch (e5) {} }
-                }
-                // $gamePlayer.followers().reverseEach — followers._data sparse
-                if (typeof window.Game_Followers !== "undefined" && typeof window.Game_Followers.prototype.reverseEach === "function" && !window.Game_Followers.prototype.reverseEach.__tyranorV2Patched) {
-                    var origReverseEach = window.Game_Followers.prototype.reverseEach;
-                    window.Game_Followers.prototype.reverseEach = function (cb, thisObject) {
-                        try { if (!this._data || typeof this._data.forEach !== "function") coerceSparseArray(this, "_data"); } catch (e9) {}
-                        if (!this._data) { try { this._data = []; } catch (e0) {} }
-                        if (typeof this._data.forEach !== "function") {
-                            console.warn("[nw-polyfill-v2] followers _data degraded, skipping reverseEach");
-                            return;
-                        }
-                        try { return origReverseEach.call(this, cb, thisObject); } catch (e10) {
-                            console.warn("[nw-polyfill-v2] followers reverseEach degraded", e10 && e10.message);
-                        }
-                    };
-                    window.Game_Followers.prototype.reverseEach.__tyranorV2Patched = true;
-                }
-                if (typeof window.Game_Followers !== "undefined" && typeof window.Game_Followers.prototype.forEach === "function" && !window.Game_Followers.prototype.forEach.__tyranorV2Patched) {
-                    var origFollowersForEach = window.Game_Followers.prototype.forEach;
-                    window.Game_Followers.prototype.forEach = function (cb, thisObject) {
-                        try { if (!this._data || typeof this._data.forEach !== "function") coerceSparseArray(this, "_data"); } catch (e11) {}
-                        if (!this._data) { try { this._data = []; } catch (e00) {} }
-                        if (typeof this._data.forEach !== "function") return;
-                        try { return origFollowersForEach.call(this, cb, thisObject); } catch (e12) {
-                            console.warn("[nw-polyfill-v2] followers forEach degraded", e12 && e12.message);
-                        }
-                    };
-                    window.Game_Followers.prototype.forEach.__tyranorV2Patched = true;
-                }
-                if (typeof window.Game_Player === "undefined" || typeof window.Game_Player.prototype.followers !== "function" || window.Game_Player.prototype.followers.__tyranorV2Patched) {
-                    // hook below still needs ensureFollowersData even if followers() itself not patched
-                } else {
-                    var origPlayerFollowers = window.Game_Player.prototype.followers;
-                    window.Game_Player.prototype.followers = function () {
-                        try { ensureFollowersData(this); } catch (e15) {}
-                        try { return origPlayerFollowers.call(this); } catch (e16) {
-                            try { ensureFollowersData(this); } catch (e17) {}
-                            return this._followers;
-                        }
-                    };
-                    window.Game_Player.prototype.followers.__tyranorV2Patched = true;
-                }
-                // Spriteset_Map.createCharacters also calls followers.reverseEach — guard there too
-                if (typeof window.Spriteset_Map !== "undefined" && typeof window.Spriteset_Map.prototype.createCharacters === "function" && !window.Spriteset_Map.prototype.createCharacters.__tyranorV2Patched) {
-                    var origCreateChars = window.Spriteset_Map.prototype.createCharacters;
-                    window.Spriteset_Map.prototype.createCharacters = function () {
-                        try {
-                            if (typeof $gamePlayer !== "undefined" && $gamePlayer && typeof $gamePlayer.followers === "function") {
-                                var f = $gamePlayer.followers();
-                                if (f && f._data && typeof f._data.forEach !== "function") {
-                                    try { coerceSparseArray(f, "_data"); } catch (e13) {}
-                                }
-                                if (f && typeof f.reverseEach !== "function" && typeof window.Game_Followers !== "undefined") {
-                                    try { Object.setPrototypeOf(f, window.Game_Followers.prototype); } catch (e14) {}
-                                }
-                            }
-                        } catch (e15) {}
-                        try { return origCreateChars.call(this); } catch (e16) {
-                            if (e16 && e16.message && e16.message.indexOf("reverseEach") !== -1) {
-                                console.warn("[nw-polyfill-v2] Spriteset_Map.createCharacters degraded, falling back", e16.message);
-                                try {
-                                    this._characterSprites = [];
-                                    if ($gameMap && typeof $gameMap.events === "function") {
-                                        $gameMap.events().forEach(function (ev) { this._characterSprites.push(new Sprite_Character(ev)); }, this);
-                                    }
-                                    if ($gameMap && typeof $gameMap.vehicles === "function") {
-                                        $gameMap.vehicles().forEach(function (v) { this._characterSprites.push(new Sprite_Character(v)); }, this);
-                                    }
-                                    this._characterSprites.push(new Sprite_Character($gamePlayer));
-                                    for (var i = 0; i < this._characterSprites.length; i++) this._tilemap.addChild(this._characterSprites[i]);
-                                    return;
-                                } catch (e17) {}
-                            }
-                            throw e16;
-                        }
-                    };
-                    window.Spriteset_Map.prototype.createCharacters.__tyranorV2Patched = true;
-                }
-                // Game_Screen._pictures.forEach — same degradation as _events
-                if (typeof window.Game_Screen !== "undefined" && typeof window.Game_Screen.prototype.update === "function" && !window.Game_Screen.prototype.update.__tyranorV2Patched) {
-                    var origScreenUpdate = window.Game_Screen.prototype.update;
-                    window.Game_Screen.prototype.update = function () {
-                        try { coerceSparseArray(this, "_pictures"); } catch (e17) {}
-                        try { return origScreenUpdate.apply(this, arguments); } catch (e18) {
-                            if (e18 && e18.message && e18.message.indexOf("forEach is not a function") !== -1) {
-                                console.warn("[nw-polyfill-v2] _pictures degraded, coercing and retrying");
-                                try { coerceSparseArray(this, "_pictures"); return origScreenUpdate.apply(this, arguments); } catch (e19) { return; }
-                            }
-                            throw e18;
-                        }
-                    };
-                    window.Game_Screen.prototype.update.__tyranorV2Patched = true;
-                }
-                clearInterval(timerE);
-            } catch (e4) {}
-        }, 200);
-        setTimeout(function () { try { clearInterval(timerE); } catch (e) {} }, 10000);
-    })();
-
-    // Scene_Map.create guard is the second line of defense if the save is genuinely truncated.
-    (function () {
-        var timer2 = setInterval(function () {
-            try {
-                if (typeof window.Scene_Map === "undefined" || typeof window.Scene_Map.prototype.create !== "function") return;
-                if (window.Scene_Map.prototype.create.__tyranorV2Patched) { clearInterval(timer2); return; }
-                var origCreate = window.Scene_Map.prototype.create;
-                window.Scene_Map.prototype.create = function () {
-                    // Guard: degraded $gamePlayer must not throw here; DataManager already logged [rpg-save].
-                    if (typeof $gamePlayer === "undefined" || !$gamePlayer || typeof $gamePlayer.isTransferring !== "function") {
-                        console.warn("[nw-polyfill-v2] Scene_Map.create: $gamePlayer degraded, forcing _transfer=false");
-                        try { Scene_Base.prototype.create.call(this); } catch (e) {}
-                        this._transfer = false;
-                        try { DataManager.loadMapData($gameMap ? $gameMap.mapId() : 1); } catch (e2) {}
-                        return;
-                    }
-                    return origCreate.call(this);
-                };
-                window.Scene_Map.prototype.create.__tyranorV2Patched = true;
-                clearInterval(timer2);
-            } catch (e3) {}
-        }, 200);
-        setTimeout(function () { try { clearInterval(timer2); } catch (e) {} }, 10000);
-    })();
-
-    // ---- joiplay/v1 式引擎健壮性补丁 ----
-    // 参考 joiplay overrides.json 的防御思路（把脆弱调用 try/catch 或短路）：
-    // 存档反序列化后 follower/角色 _characterName 可能为 undefined，
-    // Sprite_Character.setCharacterBitmap → ImageManager.isBigCharacter →
-    // filename.match(...) 崩溃。v1 用预留引擎核心天然规避；v2 用游戏自带
-    // 引擎，需在兼容层兜底。
+    // ---- 引擎方法参数兜底（毒存档字段的最后防线，成本一次性）----
     (function () {
         var patchTimer = setInterval(function () {
             try {
-                // Game_CharacterBase.characterName 兜底：undefined/null → ""
                 if (typeof window.Game_CharacterBase !== "undefined" &&
                     typeof window.Game_CharacterBase.prototype.characterName === "function" &&
                     !window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched) {
@@ -903,10 +548,18 @@
                     };
                     window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched = true;
                 }
-                // Game_CharacterBase.isTransparent 兜底：存档对象 _transparent 丢失 →
-                // return undefined（应返回 false）。Sprite_Character.updateVisibility
-                // 判断 if (this._character.isTransparent()) 时 undefined 是 falsy 不崩，
-                // 但防御性补齐，避免依赖 falsy 语义
+                if (typeof window.Game_Actor !== "undefined" &&
+                    typeof window.Game_Actor.prototype.characterName === "function" &&
+                    !window.Game_Actor.prototype.characterName.__tyranorV2Patched) {
+                    var origActorCN = window.Game_Actor.prototype.characterName;
+                    window.Game_Actor.prototype.characterName = function () {
+                        try {
+                            var v = origActorCN.call(this);
+                            return (v === undefined || v === null) ? "" : v;
+                        } catch (e) { return ""; }
+                    };
+                    window.Game_Actor.prototype.characterName.__tyranorV2Patched = true;
+                }
                 if (typeof window.Game_CharacterBase !== "undefined" &&
                     typeof window.Game_CharacterBase.prototype.isTransparent === "function" &&
                     !window.Game_CharacterBase.prototype.isTransparent.__tyranorV2Patched) {
@@ -919,7 +572,6 @@
                     };
                     window.Game_CharacterBase.prototype.isTransparent.__tyranorV2Patched = true;
                 }
-                // ImageManager.isBigCharacter / isObjectCharacter 防御：filename 非字符串 → false
                 if (typeof window.ImageManager !== "undefined") {
                     if (typeof window.ImageManager.isBigCharacter === "function" && !window.ImageManager.isBigCharacter.__tyranorV2Patched) {
                         var origBig = window.ImageManager.isBigCharacter;
@@ -938,102 +590,11 @@
                         window.ImageManager.isObjectCharacter.__tyranorV2Patched = true;
                     }
                 }
-                // Game_Actor.characterName 兜底（队伍角色经此路径）
-                if (typeof window.Game_Actor !== "undefined" &&
-                    typeof window.Game_Actor.prototype.characterName === "function" &&
-                    !window.Game_Actor.prototype.characterName.__tyranorV2Patched) {
-                    var origActorCN = window.Game_Actor.prototype.characterName;
-                    window.Game_Actor.prototype.characterName = function () {
-                        try {
-                            var v = origActorCN.call(this);
-                            return (v === undefined || v === null) ? "" : v;
-                        } catch (e) { return ""; }
-                    };
-                    window.Game_Actor.prototype.characterName.__tyranorV2Patched = true;
-                }
-                // $dataSystem.locale 缺失时补 "en"（Game_System.isJapanese 等 .match 防御）
-                if (typeof $dataSystem !== "undefined" && $dataSystem &&
-                    typeof $dataSystem.locale !== "string" && !$dataSystem.__localePatched) {
-                    try {
-                        $dataSystem.locale = "en";
-                        $dataSystem.__localePatched = true;
-                    } catch (eLocale) {}
-                }
-                // Game_Screen.tone 警惕：存档反序列化后 _tone 可能退化为 plain object
-                // （Array 原型丢失 → tone.clone() 不存在 → TypeError）
-                if (typeof window.Game_Screen !== "undefined" && typeof window.Game_Screen.prototype.tone === "function" &&
-                    !window.Game_Screen.prototype.tone.__tyranorV2Patched) {
-                    var origTone = window.Game_Screen.prototype.tone;
-                    window.Game_Screen.prototype.tone = function () {
-                        try {
-                            var v = origTone.call(this);
-                            if (!v || !Array.isArray(v) || typeof v.clone !== "function") {
-                                this._tone = [0, 0, 0, 0];
-                                return this._tone;
-                            }
-                            return v;
-                        } catch (e) { return [0, 0, 0, 0]; }
-                    };
-                    window.Game_Screen.prototype.tone.__tyranorV2Patched = true;
-                }
-                // Spriteset_Base.updateToneChanger 防御：tone.clone 健壮性
-                if (typeof window.Spriteset_Base !== "undefined" && typeof window.Spriteset_Base.prototype.updateToneChanger === "function" &&
-                    !window.Spriteset_Base.prototype.updateToneChanger.__tyranorV2Patched) {
-                    var origToneChanger = window.Spriteset_Base.prototype.updateToneChanger;
-                    window.Spriteset_Base.prototype.updateToneChanger = function () {
-                        try {
-                            // 确保 tone() 返回真实 Array（有 clone/equals）
-                            var tone = $gameScreen.tone();
-                            if (tone && typeof tone.clone !== "function") {
-                                $gameScreen._tone = [0, 0, 0, 0];
-                            }
-                            return origToneChanger.call(this);
-                        } catch (e) {
-                            try { this._tone = $gameScreen._tone = [0, 0, 0, 0]; } catch (e2) {}
-                        }
-                    };
-                    window.Spriteset_Base.prototype.updateToneChanger.__tyranorV2Patched = true;
-                }
-                // Spriteset_Map.updateShadow 兜底：正常情况下 repairGameObjects 已在
-                // loadGame 出口重建 airship，这里只处理"读档后被 mod/插件再改坏"的边缘情况。
-                // 不再无条件 hook updateShadow（插件链可能直接调原型方法，绕过我们的替换，
-                // 反而造成"修了没修"的假象）；仅当观察到 airship 退化时才临时兜底。
-                if (typeof window.Spriteset_Map !== "undefined" && typeof window.Spriteset_Map.prototype.updateShadow === "function") {
-                    var shadowKey = "_tyranorV2ShadowHooked";
-                    if (!window.Spriteset_Map.prototype[shadowKey]) {
-                        var origUpdateShadow = window.Spriteset_Map.prototype.updateShadow;
-                        var newUpdateShadow = function () {
-                            try {
-                                var airship = null;
-                                try { airship = $gameMap.airship(); } catch (eA) {}
-                                if (!airship || typeof airship.shadowX !== "function") {
-                                    if (typeof window.Game_Vehicle !== "undefined") {
-                                        try {
-                                            $gameMap._vehicles[2] = new window.Game_Vehicle("airship");
-                                            airship = $gameMap._vehicles[2];
-                                        } catch (eSh2) { airship = null; }
-                                    }
-                                }
-                                if (airship && typeof airship.shadowX !== "function" && typeof window.Game_Vehicle !== "undefined") {
-                                    try { Object.setPrototypeOf(airship, window.Game_Vehicle.prototype); } catch (eSh) {}
-                                }
-                                if (!airship || typeof airship.shadowX !== "function") {
-                                    console.warn("[nw-polyfill-v2] updateShadow: airship degraded, skipping");
-                                    return;
-                                }
-                                return origUpdateShadow.call(this);
-                            } catch (e) {}
-                        };
-                        window.Spriteset_Map.prototype.updateShadow = newUpdateShadow;
-                        window.Spriteset_Map.prototype[shadowKey] = true;
-                    }
-                }
-                // Sprite/ScreenSprite opacity setter 防御：value 非有限数字 → 0
-                // （$gameScreen._flashColor[3] 或角色 _opacity 经存档后可能 undefined，
-                // setter 里 value.clamp(0,255) 崩；这是 clamp 报错的最终防线）
+                // Sprite/ScreenSprite opacity setter 兜底：value 非有限数字 → 0
+                // （$gameScreen._flashColor[3] 或角色 _opacity 经毒存档后可能 undefined，
+                // setter 里 value.clamp(0,255) 崩）
                 function guardOpacitySetter(proto, tag) {
                     try {
-                        // 标志挂 prototype 上，防重复安装（descriptor 上挂属性不持久）
                         if (proto.__tyranorOpacityGuarded) return;
                         var desc = Object.getOwnPropertyDescriptor(proto, "opacity");
                         if (!desc) return;
@@ -1062,17 +623,12 @@
                 if (typeof window.ScreenSprite !== "undefined" && window.ScreenSprite.prototype) {
                     guardOpacitySetter(window.ScreenSprite.prototype, "ScreenSprite");
                 }
-                // 全部就绪后停止轮询
-                // 注意：本 polyfill 在游戏脚本加载前执行，早期 tick 里所有类都是 undefined。
-                // 停止条件绝不能把 "typeof X === undefined" 当作"已完成"——那会在第一次
-                // tick（rpg_core.js 尚未执行）就 clearInterval，此后 characterName/
-                // isTransparent/tone/updateShadow hook/opacity guard 全部从未安装
-                // （09_03 与 09_04 日志中 updateShadow 原版崩溃 + opacity guard 零输出即是此因）。
-                // 必须等类存在且已补丁才停；10 秒熔断兜底防永不停止。
+                // 停止条件：所有类必须存在且已补丁。
+                // 不能把 "typeof X === undefined" 当作"已完成"——polyfill 在游戏脚本
+                // 加载前执行，首轮 tick 时所有类都是 undefined，误停会导致补丁永不安装。
                 if (window.Game_CharacterBase && window.Game_CharacterBase.prototype.characterName && window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched &&
                     window.Game_Actor && window.Game_Actor.prototype.characterName && window.Game_Actor.prototype.characterName.__tyranorV2Patched &&
-                    window.ImageManager && window.ImageManager.isBigCharacter && window.ImageManager.isBigCharacter.__tyranorV2Patched &&
-                    typeof $dataSystem !== "undefined" && $dataSystem && ($dataSystem.__localePatched || typeof $dataSystem.locale === "string")) {
+                    window.ImageManager && window.ImageManager.isBigCharacter && window.ImageManager.isBigCharacter.__tyranorV2Patched) {
                     clearInterval(patchTimer);
                 }
             } catch (e) {}
@@ -1080,5 +636,5 @@
         setTimeout(function () { try { clearInterval(patchTimer); } catch (e) {} }, 10000);
     })();
 
-    console.log("[nw-polyfill-v2] JoiPlay compat installed (webgl shims + overrides + joiSaveAs)");
+    console.log("[nw-polyfill-v2] JoiPlay compat installed (webgl shims + overrides + joiSaveAs + json rehydrate)");
 })();
