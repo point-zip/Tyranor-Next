@@ -371,9 +371,11 @@
                     }
                     // _vehicles 三槽（boat/ship/airship）在 JsonEx 解码时可能各自丢成
                     // undefined 或原型退化：createCharacters 会为每个 vehicle new
-                    // Sprite_Character → updateVisibility → vehicle.isTransparent() 崩。
+                    // Sprite_Character → updateVisibility → vehicle.isTransparent() 崩；
+                    // updateShadow → airship.shadowX() 崩。
                     // 必须在同步路径（loadGame 出口 / extractSaveContents 完成后）就修复，
                     // setInterval 轮询插不进 Spriteset_Map 初始化栈。
+                    var vehStates = [];
                     try {
                         if (!$gameMap._vehicles || typeof $gameMap._vehicles.forEach !== "function") {
                             $gameMap._vehicles = [];
@@ -383,26 +385,42 @@
                         for (var vti = 0; vti < 3; vti++) {
                             var vhCur = $gameMap._vehicles[vti];
                             if (!vhCur || typeof vhCur.isTransparent !== "function") {
-                                // 重建整个 vehicle（new Game_Vehicle 依赖 $dataSystem，
-                                // 若 $dataSystem 未就绪则仅 setPrototypeOf 兜底）
+                                var rebuilt = null;
+                                // 优先 new Game_Vehicle（依赖 $dataSystem 载具字段）
                                 if (typeof window.Game_Vehicle !== "undefined" && typeof $dataSystem !== "undefined" && $dataSystem) {
                                     try {
-                                        var newVh = new window.Game_Vehicle(vhTypes[vti]);
-                                        newVh.setMapId($gameMap.mapId());
-                                        $gameMap._vehicles[vti] = newVh;
-                                        continue;
-                                    } catch (eVhNew) {}
+                                        rebuilt = new window.Game_Vehicle(vhTypes[vti]);
+                                        rebuilt.setMapId($gameMap.mapId());
+                                    } catch (eVhNew) { rebuilt = null; }
                                 }
-                                if (vhCur && typeof window.Game_Vehicle !== "undefined") {
-                                    try { Object.setPrototypeOf(vhCur, window.Game_Vehicle.prototype); } catch (eVhProto) {}
+                                // new 失败（$dataSystem 载具字段缺失/结构异常）→ 手搓最小 vehicle：
+                                // Object.create + initMembers（纯字段赋值，不依赖 $dataSystem），
+                                // 方法全部来自原型，shadowX/isTransparent 均可用
+                                if (!rebuilt && vhCur && typeof window.Game_Vehicle !== "undefined") {
+                                    try {
+                                        Object.setPrototypeOf(vhCur, window.Game_Vehicle.prototype);
+                                        if (typeof vhCur.initMembers === "function") {
+                                            try { vhCur.initMembers(); } catch (eInit) {}
+                                        }
+                                        if (vhCur._type === undefined || vhCur._type === null || vhCur._type === "") {
+                                            vhCur._type = vhTypes[vti];
+                                        }
+                                        rebuilt = vhCur;
+                                    } catch (eVhProto) { rebuilt = vhCur || null; }
                                 }
+                                $gameMap._vehicles[vti] = rebuilt;
                             } else if (vhCur._type === undefined || vhCur._type === null || vhCur._type === "") {
-                                // 对象健全但 _type 丢失 → 手动补类型（isBoat/isShip/isAirship 依赖它）
+                                // 对象健全但 _type 丢失 → 按槽位补类型（isBoat/isShip/isAirship 依赖它）
                                 try { vhCur._type = vhTypes[vti]; } catch (eVhType) {}
                             }
+                            var vhFinal = $gameMap._vehicles[vti];
+                            vehStates.push(vhFinal && typeof vhFinal.shadowX === "function" ? "ok" : "BAD");
                         }
                         $gameMap._vehicles.length = 3;
                     } catch (eAir3) {}
+                    // 诊断：总是输出三槽状态，下次日志可直接判断重建是否生效
+                    try { console.log("[v2-diag] vehicles repaired: " + vehStates.join(",") +
+                        " airship.shadowX=" + (typeof ($gameMap._vehicles && $gameMap._vehicles[2] && $gameMap._vehicles[2].shadowX))); } catch (eVhLog) {}
                     if ($gameMap._commonEvents && typeof $gameMap._commonEvents.forEach !== "function") {
                         try { $gameMap._commonEvents = toArrayIfNeeded($gameMap._commonEvents); } catch (e9) {}
                     }
@@ -1045,15 +1063,16 @@
                     guardOpacitySetter(window.ScreenSprite.prototype, "ScreenSprite");
                 }
                 // 全部就绪后停止轮询
-                // 注意：opacity 已由 guardOpacitySetter 内部描述符标志去重，停止条件不必包含它
-                // （此前包含 Sprite.opacity.__tyranorV2Patched，但属性描述符不可读该属性，
-                // 永远 false → patchTimer 永不停止 → 每 200ms 重新调 guardOpacitySetter，
-                // 但由于描述符已带 __tyranorV2Patched，guardOpacitySetter 直接 return，
-                // 仅产生日志噪音；真正的卡死/黑屏来自别处）
-                if ((typeof window.Game_CharacterBase === "undefined" || (window.Game_CharacterBase.prototype.characterName && window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched)) &&
-                    (typeof window.Game_Actor === "undefined" || (window.Game_Actor.prototype.characterName && window.Game_Actor.prototype.characterName.__tyranorV2Patched)) &&
-                    (typeof window.ImageManager === "undefined" || (window.ImageManager.isBigCharacter && window.ImageManager.isBigCharacter.__tyranorV2Patched)) &&
-                    (typeof $dataSystem === "undefined" || $dataSystem.__localePatched)) {
+                // 注意：本 polyfill 在游戏脚本加载前执行，早期 tick 里所有类都是 undefined。
+                // 停止条件绝不能把 "typeof X === undefined" 当作"已完成"——那会在第一次
+                // tick（rpg_core.js 尚未执行）就 clearInterval，此后 characterName/
+                // isTransparent/tone/updateShadow hook/opacity guard 全部从未安装
+                // （09_03 与 09_04 日志中 updateShadow 原版崩溃 + opacity guard 零输出即是此因）。
+                // 必须等类存在且已补丁才停；10 秒熔断兜底防永不停止。
+                if (window.Game_CharacterBase && window.Game_CharacterBase.prototype.characterName && window.Game_CharacterBase.prototype.characterName.__tyranorV2Patched &&
+                    window.Game_Actor && window.Game_Actor.prototype.characterName && window.Game_Actor.prototype.characterName.__tyranorV2Patched &&
+                    window.ImageManager && window.ImageManager.isBigCharacter && window.ImageManager.isBigCharacter.__tyranorV2Patched &&
+                    typeof $dataSystem !== "undefined" && $dataSystem && ($dataSystem.__localePatched || typeof $dataSystem.locale === "string")) {
                     clearInterval(patchTimer);
                 }
             } catch (e) {}
