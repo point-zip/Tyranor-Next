@@ -292,13 +292,60 @@
         return value;
     }
 
-    // JsonEx.parse hook：所有 JsonEx 反序列化（存档/config/global）出口统一 rehydrate
+    // MV 1.6 JsonEx 标记 → 1.3.4 结构转换（本质修复的核心）。
+    // 本类游戏引擎为 MV 1.3.4（JsonEx 只认 @），但存量存档来自 1.6 引擎：
+    // @a=数组包装、@c=对象 identity、@r=循环引用回指。1.3.4 的 _decode 不认识
+    // 这些标记，导致所有数组解成 {@c,@a} plain object（_events.filter 崩）、
+    // 引用对象解成 {@r} 空壳（player.isTransferring 崩）。
+    // 转换规则：{@c,@a:[...]} → 拆出数组并注册 idMap；{@r:id} → 回指 idMap；
+    // 普通 @ 构造器标记原样保留，交由游戏 _decode 恢复原型。
+    function convertJsonEx16To13(node, idMap, depth) {
+        if (!node || typeof node !== "object") return node;
+        if (depth > 80) return node; // JsonEx.maxDepth=100，防御性限制
+        if (Array.isArray(node)) {
+            for (var i = 0; i < node.length; i++) {
+                node[i] = convertJsonEx16To13(node[i], idMap, depth + 1);
+            }
+            return node;
+        }
+        // @r 回指：返回已解码对象（引用必须在 @c 注册后出现，JSON 顺序保证）
+        if (typeof node["@r"] !== "undefined") {
+            var ref = idMap[node["@r"]];
+            if (ref === undefined) {
+                try { console.warn("[v2-diag] JsonEx16 @r dangling: " + node["@r"]); } catch (eR) {}
+                return null;
+            }
+            return ref;
+        }
+        // @a 数组包装：拆包（数组本体直接取用，children 递归转换）
+        var wrapped = Object.prototype.hasOwnProperty.call(node, "@a") && Array.isArray(node["@a"]);
+        var result = wrapped ? node["@a"] : {};
+        var cid = node["@c"];
+        if (typeof cid === "number") idMap[cid] = result; // 先注册再递归，支持自引用/循环
+        if (typeof node["@"] === "string") result["@"] = node["@"];
+        if (wrapped) {
+            for (var wi = 0; wi < result.length; wi++) {
+                result[wi] = convertJsonEx16To13(result[wi], idMap, depth + 1);
+            }
+            return result;
+        }
+        for (var k in node) {
+            if (!node.hasOwnProperty(k)) continue;
+            if (k === "@c" || k === "@a" || k === "@r" || k === "@") continue;
+            if (k === "__proto__" || k === "constructor" || k === "prototype") continue; // 原型污染防御
+            var child = node[k];
+            result[k] = (child && typeof child === "object") ? convertJsonEx16To13(child, idMap, depth + 1) : child;
+        }
+        return result;
+    }
+
+    // JsonEx.parse hook：JSON.parse → 1.6→1.3.4 结构转换 → 游戏 _decode 恢复原型 → rehydrate 兜底
     (function () {
         var parseTimer = setInterval(function () {
             try {
-                if (typeof window.JsonEx === "undefined" || typeof window.JsonEx.parse !== "function") return;
+                if (typeof window.JsonEx === "undefined" || typeof window.JsonEx.parse !== "function" ||
+                    typeof window.JsonEx._decode !== "function") return;
                 if (window.JsonEx.parse.__tyranorV2Patched) { clearInterval(parseTimer); return; }
-                var origParse = window.JsonEx.parse;
                 window.JsonEx.parse = function (json) {
                     // 存档原文诊断：_vehicles 节点原文（确认存档内容形态）
                     try {
@@ -309,7 +356,9 @@
                             }
                         }
                     } catch (eDiag) {}
-                    var result = origParse.call(this, json);
+                    var tree = JSON.parse(json);
+                    try { tree = convertJsonEx16To13(tree, {}, 0); } catch (eCv) {}
+                    var result = window.JsonEx._decode(tree);
                     try { rehydrateTree(result, 0); } catch (eRe) {}
                     return result;
                 };
