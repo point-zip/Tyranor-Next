@@ -369,6 +369,31 @@
                     if ($gameMap._vehicles && typeof $gameMap._vehicles.forEach !== "function") {
                         try { $gameMap._vehicles = toArrayIfNeeded($gameMap._vehicles); } catch (e8) {}
                     }
+                    // _vehicles[2]（airship）槽位在 JsonEx 解码时可能丢成 undefined：
+                    // Spriteset_Map.initialize 同步走 updateShadow → airship.shadowX() 崩。
+                    // 必须在同步路径（loadGame 出口 / extractSaveContents 完成后）就重建，
+                    // setInterval 轮询插不进 Spriteset_Map 初始化栈。
+                    try {
+                        if (!$gameMap._vehicles || $gameMap._vehicles.length < 3) {
+                            $gameMap._vehicles = [$gameMap._vehicles ? $gameMap._vehicles[0] : undefined,
+                                $gameMap._vehicles ? $gameMap._vehicles[1] : undefined, undefined];
+                        }
+                        var airshipObj = $gameMap._vehicles[2];
+                        if (!airshipObj || typeof airshipObj.shadowX !== "function") {
+                            if (typeof window.Game_Vehicle !== "undefined") {
+                                try {
+                                    var newShip = new window.Game_Vehicle("airship");
+                                    newShip.setMapId($gameMap.mapId());
+                                    $gameMap._vehicles[2] = newShip;
+                                } catch (eAir) {}
+                            }
+                        } else if (typeof $gameMap.airship !== "function" || $gameMap.airship() !== airshipObj) {
+                            // 原型已退化但方法存在 → 保险
+                            if ($gameMap._vehicles[2] && typeof $gameMap._vehicles[2].isAirship !== "function" && typeof window.Game_Vehicle !== "undefined") {
+                                try { Object.setPrototypeOf($gameMap._vehicles[2], window.Game_Vehicle.prototype); } catch (eAir2) {}
+                            }
+                        }
+                    } catch (eAir3) {}
                     if ($gameMap._commonEvents && typeof $gameMap._commonEvents.forEach !== "function") {
                         try { $gameMap._commonEvents = toArrayIfNeeded($gameMap._commonEvents); } catch (e9) {}
                     }
@@ -926,18 +951,16 @@
                     };
                     window.Spriteset_Base.prototype.updateToneChanger.__tyranorV2Patched = true;
                 }
-                // Spriteset_Map.updateShadow 防御：airship（$gameMap.airship()）可能退化
-                // 为 plain object 或 null（_vehicles[2] 槽位在存档中丢失 → 方法不存在 → TypeError）
-                // 注意：__tyranorV2Patched 标志必须设在 game 原始方法上，不能用替换后的方法名，
-                // 否则下一次轮询看到自己的标志误判"已补丁"，导致替换永不生效
+                // Spriteset_Map.updateShadow 兜底：正常情况下 repairGameObjects 已在
+                // loadGame 出口重建 airship，这里只处理"读档后被 mod/插件再改坏"的边缘情况。
+                // 不再无条件 hook updateShadow（插件链可能直接调原型方法，绕过我们的替换，
+                // 反而造成"修了没修"的假象）；仅当观察到 airship 退化时才临时兜底。
                 if (typeof window.Spriteset_Map !== "undefined" && typeof window.Spriteset_Map.prototype.updateShadow === "function") {
-                    // 检测 game 原始方法是否已被替换（用闭包标记而非属性，避免被误判）
                     var shadowKey = "_tyranorV2ShadowHooked";
                     if (!window.Spriteset_Map.prototype[shadowKey]) {
                         var origUpdateShadow = window.Spriteset_Map.prototype.updateShadow;
                         var newUpdateShadow = function () {
                             try {
-                                // 确保 airship 是真实 Game_Vehicle（有 shadowX 等）；null/undefined 直接重建
                                 var airship = null;
                                 try { airship = $gameMap.airship(); } catch (eA) {}
                                 if (!airship || typeof airship.shadowX !== "function") {
