@@ -1,6 +1,5 @@
 package com.core.tyrano
 
-import android.net.Uri
 import android.util.Log
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -128,7 +127,7 @@ internal class TyranoLocalHttpServer(
             }
             val q = uri.indexOf('?')
             if (q >= 0) uri = uri.substring(0, q)
-            uri = try { Uri.decode(uri) ?: uri } catch (_: Throwable) { uri }
+            uri = decodeUriLenient(uri)
             if (uri == "/") uri = "/index.html"
             while (uri.startsWith("/")) uri = uri.substring(1)
             val normalizedLookup = uri.replace(Regex("""/\./"""), "/").replace(Regex("""//+"""), "/").lowercase(Locale.ROOT)
@@ -213,6 +212,35 @@ internal class TyranoLocalHttpServer(
         }
         return ResolvedFile(resolveCaseInsensitive(uri), null)
     }
+
+    // 宽松 URI 解码：文件名可含字面 '%'（如 "xiclotlan_s_128%.rpgmvp"）。
+    // android.net.Uri.decode 遇到非法 % 序列（% 后非两个 hex）会产生 U+FFFD
+    // 替换字符，把合法文件名破坏成找不到的乱码（战斗图片 404 卡加载）。
+    // 这里手动解码：% 后恰好两个 hex 才解码，否则保留 '%' 原字符。
+    private fun decodeUriLenient(uri: String): String {
+        if (!uri.contains('%')) return uri
+        val sb = StringBuilder(uri.length)
+        var i = 0
+        val n = uri.length
+        while (i < n) {
+            val c = uri[i]
+            if (c == '%' && i + 2 < n) {
+                val h = uri[i + 1]
+                val l = uri[i + 2]
+                if (h.isHex() && l.isHex()) {
+                    sb.append(((Character.digit(h, 16) shl 4) or Character.digit(l, 16)).toChar())
+                    i += 3
+                    continue
+                }
+            }
+            sb.append(c)
+            i++
+        }
+        return sb.toString()
+    }
+
+    private fun Char.isHex(): Boolean =
+        (this in '0'..'9') || (this in 'a'..'f') || (this in 'A'..'F')
 
     private fun canonicalIfValid(uri: String?): File? {
         if (uri == null || uri.contains("\u0000")) return null
