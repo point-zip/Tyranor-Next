@@ -339,13 +339,25 @@
         return result;
     }
 
-    // JsonEx.parse hook：JSON.parse → 1.6→1.3.4 结构转换 → 游戏 _decode 恢复原型 → rehydrate 兜底
+    // JsonEx.parse hook：按引擎能力分流。
+    // MV 1.6+/MZ 的 _decode 原生处理 @c/@a/@r 标记（循环引用/数组包装），
+    // 必须走引擎原生 parse——convert 拆标记反而会破坏其预期结构
+    // （1.6 游戏运行时 makeDeepCopy 即崩，rpg_core.js:9080）。
+    // 仅 MV 1.3.x（_decode 只认 @）需要先 convert 再交 _decode。
     (function () {
         var parseTimer = setInterval(function () {
             try {
                 if (typeof window.JsonEx === "undefined" || typeof window.JsonEx.parse !== "function" ||
                     typeof window.JsonEx._decode !== "function") return;
                 if (window.JsonEx.parse.__tyranorV2Patched) { clearInterval(parseTimer); return; }
+                // 引擎能力检测：_decode 源码含 @c/@a → 原生支持 1.6 标记
+                var engineHandles16 = false;
+                try {
+                    var decodeSrc = String(window.JsonEx._decode);
+                    engineHandles16 = decodeSrc.indexOf("@c") >= 0 || decodeSrc.indexOf("@a") >= 0;
+                } catch (eSrc) {}
+                try { console.log("[v2-diag] JsonEx engineHandles16=" + engineHandles16); } catch (eLog) {}
+                var origParse = window.JsonEx.parse;
                 window.JsonEx.parse = function (json) {
                     // 存档原文诊断：_vehicles 节点原文（确认存档内容形态）
                     try {
@@ -356,9 +368,16 @@
                             }
                         }
                     } catch (eDiag) {}
-                    var tree = JSON.parse(json);
-                    try { tree = convertJsonEx16To13(tree, {}, 0); } catch (eCv) {}
-                    var result = window.JsonEx._decode(tree);
+                    var result;
+                    if (engineHandles16) {
+                        // 1.6+/MZ：原生 parse（JSON.parse + _decode 全流程由引擎完成）
+                        result = origParse.call(this, json);
+                    } else {
+                        // 1.3.x：JSON.parse → 1.6 标记转换 → 引擎 _decode（单参签名）
+                        var tree = JSON.parse(json);
+                        try { tree = convertJsonEx16To13(tree, {}, 0); } catch (eCv) {}
+                        result = window.JsonEx._decode(tree);
+                    }
                     try { rehydrateTree(result, 0); } catch (eRe) {}
                     return result;
                 };
