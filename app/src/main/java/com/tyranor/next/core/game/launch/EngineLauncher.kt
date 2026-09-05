@@ -1177,3 +1177,21 @@ internal fun effectiveRpgMakerModEnabled(
     globalDefault: Boolean,
 ): Boolean = engine in setOf(EngineType.RPG_MV, EngineType.RPG_MZ) &&
     (perGameOverride ?: globalDefault)
+
+internal fun effectiveRpgMakerVersion(context: Context, game: ScanGame): String? = when (game.engine) {
+    EngineType.RPG_MV -> {
+        val raw = PerGameSettingsStore.getStr(context, game.uri, PerGameSettingsStore.F_RPG_MV_VERSION)
+        val override = raw?.trim()?.lowercase()?.let { v ->
+            if (v == EngineSettingsStore.RPG_MV_V0 || v == EngineSettingsStore.RPG_MV_V1 || v == EngineSettingsStore.RPG_MV_V2) v else null
+        }
+        override ?: EngineSettingsStore.getRpgMvEngineVersion(context)
+    }
+    EngineType.RPG_MZ -> {
+        val raw = PerGameSettingsStore.getStr(context, game.uri, PerGameSettingsStore.F_RPG_MZ_VERSION)
+        val override = raw?.trim()?.lowercase()?.let { v ->
+            if (v == EngineSettingsStore.RPG_MZ_V0 || v == EngineSettingsStore.RPG_MZ_V1 || v == EngineSettingsStore.RPG_MZ_V2) v else null
+        }
+        override ?: EngineSettingsStore.getRpgMzEngineVersion(context)
+    }
+    else -> null
+}
