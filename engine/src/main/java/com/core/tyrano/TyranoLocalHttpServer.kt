@@ -177,6 +177,14 @@ internal class TyranoLocalHttpServer(
             target = canonicalIfValid(alt)
             if (target != null) { Log.i(TAG, "resource fallback m4a->ogg $uri -> $alt"); return ResolvedFile(target, null) }
         }
+        // 反向回退：游戏素材只发了 .m4a（如冬日狂想曲），而 MV 引擎按平台请求
+        // .ogg（Android WebView 不支持 m4a 时请求 ogg）。ogg 404 时尝试同名 .m4a，
+        // 由 WebView 自带的 AAC 解码器播放。
+        if (lower.endsWith(".ogg")) {
+            val alt = replaceSuffix(uri, ".ogg", ".m4a")
+            target = canonicalIfValid(alt)
+            if (target != null) { Log.i(TAG, "resource fallback ogg->m4a $uri -> $alt"); return ResolvedFile(target, null) }
+        }
         if (lower.endsWith(".rpgmvm")) {
             val alt = replaceSuffix(uri, ".rpgmvm", ".rpgmvo")
             target = canonicalIfValid(alt)
