@@ -55,14 +55,20 @@ Graphics._createRenderer = function() {
 };
 
 // PC 版 MV 的本地存档文件名是 global.bin / fileN.bin / config.bin（globalId/title 校验
-// 也能对上），而 webStorageKey 产出 'RPG Global' / 'RPG FileN' / 'RPG Config'——
-// 桥经 TyranoStorage.resolveFile 会把含空格的键哈希成 key_sha256.bin，永远读不到
-// PC 存档（标题页"继续"选项消失）。读路径按 PC 名兜底；写路径只写标准键，
-// 不双写（避免 PC 目录被写入非 PC 可读的冗余文件）。
+// 也能对上），而 webStorageKey 产出的键（桥经 TyranoStorage.resolveFile 对含空格/
+// 非 ASCII 键会哈希成 key_sha256.bin）永远读不到 PC 存档（标题页"继续"选项消失）。
+// 键名形态有两种（读路径都要兜底；写路径只写游戏自己请求的键，不双写）：
+//   原版 MV：'RPG Global' / 'RPG FileN' / 'RPG Config'
+//   YEP_SaveCore：'RPG <游戏标题> Global' / 'RPG <游戏标题> FileN' / 'RPG <游戏标题> Config'
 StorageManager.pcLocalSaveKey = function(key) {
-    if (key === "RPG Global") return "global";
-    if (key === "RPG Config") return "config";
-    var m = /^RPG File(\d+)$/.exec(key);
+    if (typeof key !== "string") return null;
+    // 前缀必须是 "RPG "（键整体不含路径分隔符/控制字符——桥侧 resolveFile 也会再校验）
+    if (!/^RPG /.test(key) || /[\u0000-\u001f/]/.test(key)) return null;
+    var m = /Global$/.exec(key);
+    if (m) return "global";
+    m = /Config$/.exec(key);
+    if (m) return "config";
+    m = /File(\d+)$/.exec(key);
     if (m) return "file" + Number(m[1]);
     return null;
 };
