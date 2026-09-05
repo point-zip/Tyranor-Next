@@ -216,10 +216,15 @@ internal class TyranoLocalHttpServer(
     // 宽松 URI 解码：文件名可含字面 '%'（如 "xiclotlan_s_128%.rpgmvp"）。
     // android.net.Uri.decode 遇到非法 % 序列（% 后非两个 hex）会产生 U+FFFD
     // 替换字符，把合法文件名破坏成找不到的乱码（战斗图片 404 卡加载）。
-    // 这里手动解码：% 后恰好两个 hex 才解码，否则保留 '%' 原字符。
+    // 这里字节级解码：%XX 收集为原始字节（多字节 UTF-8 序列保持连贯），
+    // 最后整体按 UTF-8 组装；非法 % 序列保留 '%' 原字符。
+    // 注意：不能按单字节 toChar 逐个追加——那会把 %E9%BB%91 这类 UTF-8
+    // 多字节序列解成三个 Latin-1 字符（é»）而非"黑"（Echoes 黑屏回归的根因）。
     private fun decodeUriLenient(uri: String): String {
         if (!uri.contains('%')) return uri
-        val sb = StringBuilder(uri.length)
+        val bytes = java.io.ByteArrayOutputStream(uri.length)
+        val plain = StringBuilder(uri.length)
+        var hasDecoded = false
         var i = 0
         val n = uri.length
         while (i < n) {
@@ -228,15 +233,20 @@ internal class TyranoLocalHttpServer(
                 val h = uri[i + 1]
                 val l = uri[i + 2]
                 if (h.isHex() && l.isHex()) {
-                    sb.append(((Character.digit(h, 16) shl 4) or Character.digit(l, 16)).toChar())
+                    bytes.write(plain.toString().toByteArray(Charsets.UTF_8))
+                    plain.setLength(0)
+                    bytes.write(((Character.digit(h, 16) shl 4) or Character.digit(l, 16)))
+                    hasDecoded = true
                     i += 3
                     continue
                 }
             }
-            sb.append(c)
+            plain.append(c)
             i++
         }
-        return sb.toString()
+        if (!hasDecoded) return uri
+        bytes.write(plain.toString().toByteArray(Charsets.UTF_8))
+        return bytes.toString("UTF-8")
     }
 
     private fun Char.isHex(): Boolean =
