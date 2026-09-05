@@ -21,6 +21,7 @@ import com.akira.tyranoemu.remote.Kirikiroid134
 import com.akira.tyranoemu.remote.Kirikiroid139
 import com.core.engine.KrkrStartupDialogPolicy
 import com.core.krkrsdl3.Krkrsdl3Activity
+import com.core.rpgmaker.RpgMakerActivity
 import com.core.tyrano.TyranoActivity
 import com.tyranor.next.R
 import com.tyranor.next.core.engine.EngineType
@@ -699,7 +700,7 @@ object EngineLauncher {
         }
 
     private fun buildWebIntent(context: Context, path: String, game: ScanGame): Intent {
-        // Tyrano 与 RPG Maker Web 共用 TyranoActivity，因此沿用同一组 WebView 宿主设置。
+        // Tyrano 与 RPG Maker Web 共用同一组 WebView 宿主设置。
         val scoped = PerGameSettingsStore.getBool(context, game.uri, "ty_scoped")
             ?: EngineSettingsStore.isTyranoScopedSaveDir(context)
         val rpgMakerModEnabled = effectiveRpgMakerModEnabled(
@@ -714,7 +715,19 @@ object EngineLauncher {
         } else {
             null
         }
-        return Intent(context, TyranoActivity::class.java).apply {
+        val rpgMakerVersion = effectiveRpgMakerVersion(context, game)
+        val rpgLegacyRenderer = PerGameSettingsStore.getBool(context, game.uri, PerGameSettingsStore.F_RPG_LEGACY_RENDERER)
+            ?: EngineSettingsStore.isRpgLegacyRenderer(context)
+        // v1/v2 由独立 rpgmaker 运行时（:rpgmaker 进程）承载；v0 与 MZ v1（占位版本）
+        // 沿用原 tyrano 宿主的 v0 链路，不传版本 extras，行为与历史版本完全一致。
+        val useRpgMakerRuntime = when (game.engine) {
+            EngineType.RPG_MV -> rpgMakerVersion == EngineSettingsStore.RPG_MV_V1 ||
+                rpgMakerVersion == EngineSettingsStore.RPG_MV_V2
+            EngineType.RPG_MZ -> rpgMakerVersion == EngineSettingsStore.RPG_MZ_V2
+            else -> false
+        }
+        val target = if (useRpgMakerRuntime) RpgMakerActivity::class.java else TyranoActivity::class.java
+        return Intent(context, target).apply {
             putExtra("path", path)
             putExtra("gamePath", path)
             putExtra("projectRoot", path)
@@ -735,6 +748,10 @@ object EngineLauncher {
             scopedSaveRoot?.let { putExtra("scopedSaveRoot", it) }
             putExtra("rpgMakerModEnabled", rpgMakerModEnabled)
             putExtra("rpgMakerModGameId", game.uri)
+            if (useRpgMakerRuntime) {
+                rpgMakerVersion?.let { putExtra("rpgMakerVersion", it) }
+                putExtra("rpgLegacyRenderer", rpgLegacyRenderer)
+            }
         }
     }
 

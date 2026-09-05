@@ -1,0 +1,34 @@
+// RPG Maker MV/MZ 独立运行时（v1/v2）。
+//
+// 与 tyrano 运行时（engine 模块 com.core.tyrano 包，承载 v0）完全分离：
+// 宿主代码由 v0 宿主复制而来并叠加版本门控的 v1/v2 兼容层，运行在独立的
+// :rpgmaker 进程；运行时资产（NW.js polyfill、rpgmv-v1 核心覆盖、
+// rpgmv-v2-joi shims、__rpg_v12.js hook）随本模块打包。
+// 复用 engine 模块的共享基础（EnginePrefs/EngineThemeColors/DoubleBackExit、
+// 引擎侧字符串资源），以及 engine assets 中的共用文件（__rmmz__.js、MZ hooks、
+// 触屏手柄、修改器资源等，内容与 feat 分支一致，避免跨模块重复资产名）。
+plugins {
+    alias(libs.plugins.android.library)
+}
+
+android {
+    namespace 'com.core.rpgmaker'
+    compileSdk 36
+
+    defaultConfig {
+        minSdk 26
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation libs.appcompat
+    implementation libs.androidx.documentfile
+    implementation libs.kotlin.stdlib
+    implementation project(':engine')
+    testImplementation libs.junit
+}
