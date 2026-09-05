@@ -281,6 +281,107 @@
     try { if (typeof globalThis !== "undefined" && !globalThis.nw) globalThis.nw = window.nw; } catch (e) {}
     try { if (typeof globalThis !== "undefined" && !globalThis.Buffer) globalThis.Buffer = window.Buffer; } catch (e) {}
 
+    // ---- lodash/underscore 全局 `_` 兜底 ----
+    // 部分游戏插件（如 DKTools 老版本）依赖全局 _（lodash），NW.js 桌面环境由
+    // 游戏自带 lodash 或 DKTools 内嵌 UMD 提供；WebView 下这些文件缺失/未加载时
+    // 插件初始化即 ReferenceError（`_ is not defined`），后续插件级联崩溃。
+    // 这里注入最小 lodash 兼容层：仅当全局 _ 未定义时生效（不覆盖游戏自带的）。
+    if (typeof window._ === "undefined") {
+        (function () {
+            function isArrayLike(o) { return o && typeof o.length === "number" && typeof o !== "function"; }
+            function isObject(o) { var t = typeof o; return o && (t === "object" || t === "function"); }
+            function keys(o) { var r = []; for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) r.push(k); return r; }
+            function iteratee(f) {
+                if (typeof f === "function") return f;
+                if (f == null) return function (o) { return o; };
+                if (typeof f === "string") return function (o) { return o == null ? undefined : o[f]; };
+                if (typeof f === "object") return function (o) { if (o == null) return false; for (var pk in f) if (Object.prototype.hasOwnProperty.call(f, pk) && o[pk] !== f[pk]) return false; return true; };
+                return function (o) { return o === f; };
+            }
+            function forEach(c, f, ctx) {
+                if (!c) return c;
+                f = iteratee(f);
+                if (isArrayLike(c)) { for (var i = 0; i < c.length; i++) if (f.call(ctx, c[i], i, c) === false) break; }
+                else { var ks = keys(c); for (var j = 0; j < ks.length; j++) if (f.call(ctx, c[ks[j]], ks[j], c) === false) break; }
+                return c;
+            }
+            function baseGet(o, path) {
+                var parts = typeof path === "string" ? path.split(".") : path;
+                var cur = o;
+                for (var i = 0; cur != null && i < parts.length; i++) {
+                    var p = parts[i];
+                    var m = /^\[(\d+)\]$/.exec(p);
+                    if (m) p = m[1];
+                    cur = cur[p];
+                }
+                return cur;
+            }
+            function baseSet(o, path, v) {
+                var parts = typeof path === "string" ? path.split(".") : path;
+                var cur = o;
+                for (var i = 0; i < parts.length - 1; i++) {
+                    var p = parts[i];
+                    if (!isObject(cur[p])) cur[p] = {};
+                    cur = cur[p];
+                }
+                cur[parts[parts.length - 1]] = v;
+                return o;
+            }
+            var _ = {
+                VERSION: "4.17.21-tyranor-min",
+                forEach: forEach, each: forEach,
+                map: function (c, f) { var r = []; forEach(c, function (v, k, o) { r.push(iteratee(f)(v, k, o)); }); return r; },
+                collect: function (c, f) { return _.map(c, f); },
+                filter: function (c, f) { var r = []; forEach(c, function (v, k, o) { if (iteratee(f)(v, k, o)) r.push(v); }); return r; },
+                find: function (c, f) { var hit; forEach(c, function (v, k, o) { if (iteratee(f)(v, k, o)) { hit = v; return false; } }); return hit; },
+                findIndex: function (c, f) { var idx = -1; forEach(c, function (v, k) { if (iteratee(f)(v, k)) { idx = k; return false; } }); return idx; },
+                some: function (c, f) { return _.find(c, f) !== undefined; },
+                any: function (c, f) { return _.some(c, f); },
+                every: function (c, f) { var all = true; forEach(c, function (v, k, o) { if (!iteratee(f)(v, k, o)) { all = false; return false; } }); return all; },
+                all: function (c, f) { return _.every(c, f); },
+                includes: function (c, v) { if (isArrayLike(c)) { for (var i = 0; i < c.length; i++) if (c[i] === v) return true; return false; } if (c) { for (var k in c) if (c[k] === v) return true; } return false; },
+                contains: function (c, v) { return _.includes(c, v); },
+                indexOf: function (c, v) { if (!isArrayLike(c)) return -1; for (var i = 0; i < c.length; i++) if (c[i] === v) return i; return -1; },
+                last: function (c) { return isArrayLike(c) && c.length ? c[c.length - 1] : undefined; },
+                first: function (c) { return isArrayLike(c) && c.length ? c[0] : undefined; },
+                head: function (c) { return _.first(c); },
+                keys: keys,
+                values: function (o) { return keys(o).map(function (k) { return o[k]; }); },
+                size: function (c) { return !c ? 0 : isArrayLike(c) ? c.length : keys(c).length; },
+                isEmpty: function (c) { return _.size(c) === 0; },
+                clone: function (o) { if (!isObject(o)) return o; if (Array.isArray(o)) return o.slice(); var r = {}; for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) r[k] = o[k]; return r; },
+                cloneDeep: function (o) { if (!isObject(o)) return o; if (Array.isArray(o)) return o.map(function (v) { return _.cloneDeep(v); }); var r = {}; keys(o).forEach(function (k) { r[k] = _.cloneDeep(o[k]); }); return r; },
+                extend: function (t) { for (var i = 1; i < arguments.length; i++) { var s = arguments[i]; if (s) for (var k in s) if (Object.prototype.hasOwnProperty.call(s, k)) t[k] = s[k]; } return t; },
+                assign: function () { return _.extend.apply(null, arguments); },
+                merge: function (t, s) { if (!isObject(s)) return t; for (var k in s) { if (!Object.prototype.hasOwnProperty.call(s, k)) continue; if (isObject(s[k]) && !Array.isArray(s[k]) && isObject(t[k]) && !Array.isArray(t[k])) _.merge(t[k], s[k]); else t[k] = _.cloneDeep(s[k]); } return t; },
+                get: function (o, path, def) { var v = baseGet(o, path); return v === undefined ? def : v; },
+                set: function (o, path, v) { return o ? baseSet(o, path, v) : o; },
+                has: function (o, path) { if (!o) return false; var parts = typeof path === "string" ? path.split(".") : path; var cur = o; for (var i = 0; i < parts.length; i++) { if (cur == null || !Object.prototype.hasOwnProperty.call(cur, parts[i])) return false; cur = cur[parts[i]]; } return true; },
+                defaults: function (o) { for (var i = 1; i < arguments.length; i++) { var s = arguments[i]; for (var k in s) if (Object.prototype.hasOwnProperty.call(s, k) && o[k] === undefined) o[k] = s[k]; } return o; },
+                times: function (n, f) { var r = []; for (var i = 0; i < n; i++) r.push(f(i)); return r; },
+                range: function (a, b, step) { if (b == null) { b = a; a = 0; } step = step || 1; var r = []; if (step > 0) for (var i = a; i < b; i += step) r.push(i); else for (var j = a; j > b; j += step) r.push(j); return r; },
+                isObject: isObject,
+                isString: function (o) { return typeof o === "string" || o instanceof String; },
+                isNumber: function (o) { return typeof o === "number" || o instanceof Number; },
+                isBoolean: function (o) { return o === true || o === false || o instanceof Boolean; },
+                isFunction: function (o) { return typeof o === "function"; },
+                isArray: Array.isArray,
+                isUndefined: function (o) { return o === undefined; },
+                isNull: function (o) { return o === null; },
+                isNil: function (o) { return o == null; },
+                toArray: function (c) { if (isArrayLike(c)) return Array.prototype.slice.call(c); return keys(c || {}).map(function (k) { return c[k]; }); },
+                debounce: function (f, wait) { var t; return function () { var args = arguments, self = this; clearTimeout(t); t = setTimeout(function () { f.apply(self, args); }, wait); }; },
+                throttle: function (f, wait) { var last = 0; return function () { var now = Date.now(); if (now - last >= wait) { last = now; return f.apply(this, arguments); } }; },
+                once: function (f) { var done, r; return function () { if (!done) { done = true; r = f.apply(this, arguments); } return r; }; },
+                noop: function () {},
+                identity: function (o) { return o; },
+            };
+            window._ = _;
+            try { if (typeof globalThis !== "undefined" && !globalThis._) globalThis._ = _; } catch (e) {}
+            try { console.log("[nw-polyfill] lodash minimal `_` installed (was undefined)"); } catch (e2) {}
+        })();
+    }
+
     (function ensureWindowCompat() {
         var pendingStub = false;
         function tryResolve() {
