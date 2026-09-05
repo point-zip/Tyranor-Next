@@ -54,6 +54,27 @@ Graphics._createRenderer = function() {
     }
 };
 
+// PC 版 MV 的本地存档文件名是 global.bin / fileN.bin / config.bin（globalId/title 校验
+// 也能对上），而 webStorageKey 产出 'RPG Global' / 'RPG FileN' / 'RPG Config'——
+// 桥经 TyranoStorage.resolveFile 会把含空格的键哈希成 key_sha256.bin，永远读不到
+// PC 存档（标题页"继续"选项消失）。读路径按 PC 名兜底；写路径只写标准键，
+// 不双写（避免 PC 目录被写入非 PC 可读的冗余文件）。
+StorageManager.pcLocalSaveKey = function(key) {
+    if (key === "RPG Global") return "global";
+    if (key === "RPG Config") return "config";
+    var m = /^RPG File(\d+)$/.exec(key);
+    if (m) return "file" + Number(m[1]);
+    return null;
+};
+StorageManager.loadFromPcLocalSave = function(key) {
+    var pcKey = this.pcLocalSaveKey(key);
+    if (!pcKey || !window.saveDataManager) return null;
+    try {
+        var data = window.saveDataManager.Load(pcKey);
+        return (data == null || data === "") ? null : data;
+    } catch (e) { return null; }
+};
+
 StorageManager.saveToWebStorage = function(savefileId, json) {
     var key = this.webStorageKey(savefileId);
     var data = LZString.compressToBase64(json);
@@ -70,6 +91,10 @@ StorageManager.loadFromWebStorage = function(savefileId) {
     var key = this.webStorageKey(savefileId);
     var data = null;
     try { data = window.saveDataManager.Load(key); } catch (e) {}
+    if (data == null || data === "") {
+        // PC 移植存档兜底：savedata/global.bin 等小写键名
+        data = this.loadFromPcLocalSave(key);
+    }
     if (data == null || data === "") {
         try { data = localStorage.getItem(key); } catch (e2) {}
     }
@@ -153,6 +178,11 @@ StorageManager.restoreBackup = function(savefileId) {
 StorageManager.webStorageExists = function(savefileId) {
     var key = this.webStorageKey(savefileId);
     try { if (window.saveDataManager.Exists(key)) return true; } catch (e) {}
+    // PC 移植存档兜底：global.bin / fileN.bin
+    var pcKey = this.pcLocalSaveKey(key);
+    if (pcKey) {
+        try { if (window.saveDataManager.Exists(pcKey)) return true; } catch (e3) {}
+    }
     try { return localStorage.getItem(key) != null; } catch (e2) { return false; }
 };
 Utils.isMobileDevice = function() {return false;};
