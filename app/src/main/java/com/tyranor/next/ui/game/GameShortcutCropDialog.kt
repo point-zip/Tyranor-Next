@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -56,7 +55,11 @@ import com.tyranor.next.core.game.shortcut.deleteShortcutCropBitmap
 import com.tyranor.next.core.game.shortcut.decodeShortcutCropBitmap
 import com.tyranor.next.core.game.shortcut.initialCropTransform
 import com.tyranor.next.core.game.shortcut.writeShortcutCropBitmap
+import com.tyranor.next.theme.AppThemeColors
+import com.tyranor.next.theme.GlassPanel
 import com.tyranor.next.theme.NavWhite
+import com.tyranor.next.theme.glassBorder
+import com.tyranor.next.theme.AppComponentShape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -173,9 +176,12 @@ private fun CropDialogCard(
     onConfirm: () -> Unit,
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().widthIn(max = 420.dp).imePadding(),
-        colors = CardDefaults.cardColors(containerColor = NavWhite),
-        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth().widthIn(max = 420.dp).imePadding().glassBorder(),
+        colors = CardDefaults.cardColors(
+            // 玻璃风格用高不透明度玻璃面板保证浮层内文字可读
+            containerColor = if (AppThemeColors.isGlass) GlassPanel else NavWhite,
+        ),
+        shape = AppComponentShape,
     ) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp),
@@ -312,7 +318,7 @@ private fun CropPreview(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(AppComponentShape)
             .background(Color.Black)
             .onSizeChanged(onViewportSizeChanged)
             .pointerInput(bitmap, metrics) {

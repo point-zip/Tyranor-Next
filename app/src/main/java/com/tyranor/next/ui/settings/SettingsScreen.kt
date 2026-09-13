@@ -28,7 +28,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Folder
@@ -66,10 +65,13 @@ import com.tyranor.next.core.settings.AppSettingsStore
 import com.tyranor.next.core.settings.EngineSettingsStore
 import com.tyranor.next.core.game.storage.GameLibraryFacade
 import com.tyranor.next.theme.AppThemeColors
+import com.tyranor.next.theme.DialogItemSurface
 import com.tyranor.next.theme.MiuixSettingsTheme
 import com.tyranor.next.theme.NavWhite
-import com.tyranor.next.theme.PageGrey
 import com.tyranor.next.theme.TextColor
+import com.tyranor.next.theme.glassBorder
+import com.tyranor.next.theme.AppComponentShape
+import com.tyranor.next.theme.AppComponentCornerRadius
 import com.tyranor.next.ui.common.AppNavItem
 import com.tyranor.next.ui.common.AppAlertDialog
 import com.tyranor.next.ui.common.AppSearchField
@@ -254,12 +256,15 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
             topBar = { SettingsTopBar(stringResource(R.string.nav_settings)) },
         ) { innerPadding ->
             LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                contentPadding = PaddingValues(top = innerPadding.calculateTopPadding() + 12.dp, bottom = 24.dp + glassNavBottomInset()),
+                // 顶栏透明：列表整体垫在顶栏下方（持久 padding），避免滚动时内容穿过顶栏
+                modifier = Modifier.fillMaxSize()
+                    .padding(horizontal = 12.dp)
+                    .padding(top = innerPadding.calculateTopPadding()),
+                contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp + glassNavBottomInset()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 item {
-                    MiuixCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 8.dp) {
+                    MiuixCard(modifier = Modifier.fillMaxWidth().glassBorder(), cornerRadius = AppComponentCornerRadius) {
                         Column(Modifier.padding(vertical = 4.dp)) {
                             ArrowPreference(
                                 title = stringResource(R.string.settings_add_game_dir),
@@ -315,7 +320,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     }
                 }
                 item {
-                    MiuixCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 8.dp) {
+                    MiuixCard(modifier = Modifier.fillMaxWidth().glassBorder(), cornerRadius = AppComponentCornerRadius) {
                         Column(Modifier.padding(vertical = 4.dp)) {
                             ArrowPreference(
                                 title = stringResource(R.string.settings_engine_settings),
@@ -326,7 +331,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     }
                 }
                 item {
-                    MiuixCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 8.dp) {
+                    MiuixCard(modifier = Modifier.fillMaxWidth().glassBorder(), cornerRadius = AppComponentCornerRadius) {
                         Column(Modifier.padding(vertical = 4.dp)) {
                             ArrowPreference(
                                 title = stringResource(R.string.settings_app_title),
@@ -385,8 +390,9 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(PageGrey)
+                                .clip(AppComponentShape)
+                                // 弹窗内条目底色：玻璃风格用亮玻璃面
+                                .background(DialogItemSurface)
                                 .padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -504,11 +510,11 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    AppNavItem(stringResource(R.string.settings_qq_group), leadingIcon = R.drawable.ic_group_qq, containerColor = PageGrey) {
+                    AppNavItem(stringResource(R.string.settings_qq_group), leadingIcon = R.drawable.ic_group_qq, containerColor = DialogItemSurface) {
                         showGroupDialog = false
                         ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://qm.qq.com/q/M9JH8A9Yys")))
                     }
-                    AppNavItem(stringResource(R.string.settings_telegram_channel), leadingIcon = R.drawable.ic_group_telegram, containerColor = PageGrey) {
+                    AppNavItem(stringResource(R.string.settings_telegram_channel), leadingIcon = R.drawable.ic_group_telegram, containerColor = DialogItemSurface) {
                         showGroupDialog = false
                         ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/tyranornext")))
                     }
@@ -546,7 +552,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                                 AppNavItem(
                                     title = stringResource(R.string.update_version_item, candidate.latestVersion),
                                     leadingIcon = R.drawable.ic_update_download,
-                                    containerColor = PageGrey,
+                                    containerColor = DialogItemSurface,
                                     onClick = {
                                         if (candidate.apkAsset != null) {
                                             startApkDownload(candidate)
@@ -566,7 +572,7 @@ fun SettingsScreen(modifier: Modifier = Modifier) {
                             AppNavItem(
                                 title = stringResource(R.string.update_open_releases),
                                 leadingIcon = R.drawable.ic_update_github,
-                                containerColor = PageGrey,
+                                containerColor = DialogItemSurface,
                                 showArrow = false,
                                 onClick = {
                                     runCatching {
@@ -700,6 +706,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
     var rpgMzVersion by remember { mutableStateOf(EngineSettingsStore.getRpgMzEngineVersion(ctx)) }
     var rpg by remember { mutableStateOf(EngineSettingsStore.loadRpgMaker(ctx)) }
     var renpyVersion by remember { mutableStateOf(EngineSettingsStore.getRenpyVersion(ctx)) }
+    var renpy by remember { mutableStateOf(EngineSettingsStore.loadRenPy(ctx)) }
 
     val fontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -751,6 +758,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
         EngineSettingsStore.setRpgMzEngineVersion(ctx, rpgMzVersion)
         EngineSettingsStore.saveRpgMaker(ctx, rpg)
         EngineSettingsStore.setRenpyVersion(ctx, renpyVersion)
+        EngineSettingsStore.saveRenPy(ctx, renpy)
     }
 
     MiuixSettingsTheme {
@@ -778,7 +786,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
                 krSwCompress, krOglCompress, krMem, krTexsize, krAccurate, krFps, isSdl3, krIs134126,
                 krVCursorScale, krMenuOpa, krPatchOverlayMode, krAnime4k,
                 ons, artVersion, artRotate, artPatch, artResolution, artSideCut, artSurfaceCache,
-                artFontCache, artPowerSaving, tyExternal, tyScoped, rpgMakerMod, rpgLegacyRenderer, rpgSaveInterop, rpgMvVersion, rpgMzVersion, rpg, renpyVersion, fontLauncher,
+                artFontCache, artPowerSaving, tyExternal, tyScoped, rpgMakerMod, rpgLegacyRenderer, rpgSaveInterop, rpgMvVersion, rpgMzVersion, rpg, renpyVersion, renpy, fontLauncher,
                 topInset = innerPadding.calculateTopPadding(),
                 onKrVersion = { krVersion = it },
                 onKrKernel = { krKernel = it },
@@ -816,6 +824,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
                 onRpgMzVersion = { rpgMzVersion = it },
                 onRpg = { rpg = it },
                 onRenpyVersion = { renpyVersion = it },
+                onRenpy = { renpy = it },
             )
         }
     }
@@ -861,7 +870,7 @@ private fun LazyListPlaceholder(
     artPowerSaving: String, tyExternal: Boolean, tyScoped: Boolean, rpgMakerMod: Boolean,
     rpgLegacyRenderer: Boolean, rpgSaveInterop: Boolean, rpgMvVersion: String, rpgMzVersion: String,
     rpg: EngineSettingsStore.RpgMaker,
-    renpyVersion: String, fontLauncher: FontPickerLauncher,
+    renpyVersion: String, renpy: EngineSettingsStore.RenPy, fontLauncher: FontPickerLauncher,
     topInset: Dp,
     onKrVersion: (String) -> Unit, onKrKernel: (String) -> Unit, onKrScoped: (Boolean) -> Unit,
     onKrSkipStartupDialogs: (Boolean) -> Unit,
@@ -879,6 +888,7 @@ private fun LazyListPlaceholder(
     onRpgLegacyRenderer: (Boolean) -> Unit, onRpgSaveInterop: (Boolean) -> Unit, onRpgMvVersion: (String) -> Unit, onRpgMzVersion: (String) -> Unit,
     onRpg: (EngineSettingsStore.RpgMaker) -> Unit,
     onRenpyVersion: (String) -> Unit,
+    onRenpy: (EngineSettingsStore.RenPy) -> Unit,
 ) {
     val krSelectMap = krSelectOptions()
     val krKernelMap = krKernelOptions()
@@ -902,8 +912,11 @@ private fun LazyListPlaceholder(
     val artFontCacheMap = artFontCacheOptions()
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-        contentPadding = PaddingValues(top = topInset + 12.dp, bottom = 24.dp),
+        // 顶栏透明：列表整体垫在顶栏下方（持久 padding），避免滚动时内容穿过顶栏
+        modifier = Modifier.fillMaxSize()
+            .padding(horizontal = 12.dp)
+            .padding(top = topInset),
+        contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         if (kind == EngineSettingsKind.KRKR) item {
@@ -1051,13 +1064,17 @@ private fun LazyListPlaceholder(
             }
         }
 
+        if (kind == EngineSettingsKind.RENPY) item {
+            RenPySettingsCard(settings = renpy, onSettings = onRenpy)
+        }
+
         item { BottomInsetSpacer() }
     }
 }
 
 @Composable
 internal fun EngineCard(header: String, content: @Composable () -> Unit) {
-    MiuixCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 8.dp) {
+    MiuixCard(modifier = Modifier.fillMaxWidth().glassBorder(), cornerRadius = AppComponentCornerRadius) {
         Column(Modifier.padding(vertical = 6.dp)) {
             Text(
                 header,

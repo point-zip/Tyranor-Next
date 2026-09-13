@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.runtime.Composable
@@ -40,7 +39,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.tyranor.next.theme.AppThemeColors
+import com.tyranor.next.theme.GlassPanel
 import com.tyranor.next.theme.NavWhite
+import com.tyranor.next.theme.glassBorder
+import com.tyranor.next.theme.AppComponentShape
 import kotlinx.coroutines.launch
 
 /**
@@ -100,10 +103,14 @@ internal fun AppAlertDialog(
                         translationY = slideFraction.value * windowHeightPx
                     }
                     // 消费卡片区域点击，避免穿透到遮罩
-                    .pointerInput(Unit) { detectTapGestures { } },
+                    .pointerInput(Unit) { detectTapGestures { } }
+                    .glassBorder(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                colors = CardDefaults.cardColors(containerColor = NavWhite),
-                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(
+                    // 玻璃风格用高不透明度玻璃面板保证可读性
+                    containerColor = if (AppThemeColors.isGlass) GlassPanel else NavWhite,
+                ),
+                shape = AppComponentShape,
             ) {
                 Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 16.dp)) {
                     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {

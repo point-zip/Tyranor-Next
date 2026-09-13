@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -48,14 +47,18 @@ import com.tyranor.next.core.auth.HikarinagiAuthService
 import com.tyranor.next.core.auth.HikarinagiAuthStore
 import com.tyranor.next.core.i18n.AppLocaleController
 import com.tyranor.next.core.settings.AppSettingsStore
+import com.tyranor.next.theme.DialogItemSurface
 import com.tyranor.next.theme.MiuixSettingsTheme
 import com.tyranor.next.theme.NavWhite
 import com.tyranor.next.theme.PageGrey
 import com.tyranor.next.theme.TextColor
+import com.tyranor.next.theme.glassBorder
 import com.tyranor.next.ui.common.AppScreenActivity
 import com.tyranor.next.ui.common.AppTopBar
 import com.tyranor.next.ui.auth.HikarinagiOAuthCallbackActivity
 import com.tyranor.next.theme.WithoutPressIndication
+import com.tyranor.next.theme.AppComponentShape
+import com.tyranor.next.theme.AppComponentCornerRadius
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.Scaffold as MiuixScaffold
 import top.yukonga.miuix.kmp.basic.Switch
@@ -121,15 +124,18 @@ internal fun CoverScraperSettingsScreen() {
             topBar = { CoverScraperTopBar() },
         ) { innerPadding ->
             LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                // 顶栏透明：列表整体垫在顶栏下方（持久 padding），避免滚动时内容穿过顶栏
+                modifier = Modifier.fillMaxSize()
+                    .padding(horizontal = 12.dp)
+                    .padding(top = innerPadding.calculateTopPadding()),
                 contentPadding = PaddingValues(
-                    top = innerPadding.calculateTopPadding() + 12.dp,
+                    top = 12.dp,
                     bottom = 24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 item {
-                    MiuixCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 8.dp) {
+                    MiuixCard(modifier = Modifier.fillMaxWidth().glassBorder(), cornerRadius = AppComponentCornerRadius) {
                         Column(Modifier.background(NavWhite).padding(vertical = 4.dp)) {
                             sources.forEachIndexed { index, source ->
                                 CoverSourceRow(
@@ -171,7 +177,7 @@ internal fun CoverScraperSettingsScreen() {
                 }
 
                 item {
-                    MiuixCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 8.dp) {
+                    MiuixCard(modifier = Modifier.fillMaxWidth().glassBorder(), cornerRadius = AppComponentCornerRadius) {
                         Column(Modifier.background(NavWhite).padding(vertical = 4.dp)) {
                             SwitchPreference(
                                 title = stringResource(R.string.cover_only_missing_title),
@@ -187,7 +193,7 @@ internal fun CoverScraperSettingsScreen() {
                 }
 
                 item {
-                    MiuixCard(modifier = Modifier.fillMaxWidth(), cornerRadius = 8.dp) {
+                    MiuixCard(modifier = Modifier.fillMaxWidth().glassBorder(), cornerRadius = AppComponentCornerRadius) {
                         Column(
                             modifier = Modifier.background(NavWhite).padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -209,7 +215,7 @@ internal fun CoverScraperSettingsScreen() {
                                     enabled = !scraping,
                                     onClick = { startBatchScrape() },
                                     modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(8.dp),
+                                    shape = AppComponentShape,
                                     colors = ButtonDefaults.buttonColors(
                                         containerColor = MaterialTheme.colorScheme.primary,
                                         disabledContainerColor = MaterialTheme.colorScheme.primary,
@@ -252,8 +258,9 @@ private fun CoverSourceRow(
         Box(
             modifier = Modifier
                 .size(28.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(PageGrey),
+                .clip(AppComponentShape)
+                // 序号徽标底色：玻璃风格用亮玻璃面，避免透明不可见
+                .background(DialogItemSurface),
             contentAlignment = Alignment.Center,
         ) {
             Text(

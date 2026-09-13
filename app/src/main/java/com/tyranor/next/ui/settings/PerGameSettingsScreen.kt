@@ -37,8 +37,11 @@ import com.tyranor.next.core.engine.external.RpgMakerRuntimeEnvironment
 import com.tyranor.next.core.game.model.ScanGame
 import com.tyranor.next.core.settings.EngineSettingsStore
 import com.tyranor.next.core.settings.PerGameSettingsStore
+import com.tyranor.next.core.settings.RenPyOverride
 import com.tyranor.next.core.settings.RpgMakerOverride
 import com.tyranor.next.theme.MiuixSettingsTheme
+import com.tyranor.next.theme.glassBorder
+import com.tyranor.next.theme.AppComponentCornerRadius
 import com.tyranor.next.ui.common.AppTopBar
 import com.tyranor.next.ui.common.TopBarIcon
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +84,10 @@ fun PerGameSettingsScreen(game: ScanGame) {
     var artFontCache by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_ART_FONT_CACHE_SIZE)) }
     var artPowerSaving by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_ART_POWER_SAVING)) }
     var renpyVersion by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_RENPY_VERSION)) }
+    var renpyOverride by remember(gid) {
+        mutableStateOf(PerGameSettingsStore.toRenPyOverride(PerGameSettingsStore.load(ctx, gid)))
+    }
+    val renpy = renpyOverride ?: RenPyOverride()
 
     val onsOverride = remember { mutableStateOf(PerGameSettingsStore.loadOnsOverride(ctx, gid) ?: JSONObject()) }
     var onsScoped by remember { mutableStateOf(onsBool(onsOverride.value, "scopedsavedir")) }
@@ -163,6 +170,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
     val globalRpgMvVersion = EngineSettingsStore.getRpgMvEngineVersion(ctx)
     val globalRpgMzVersion = EngineSettingsStore.getRpgMzEngineVersion(ctx)
     val globalRenpyVersion = EngineSettingsStore.getRenpyVersion(ctx)
+    val globalRenpy = remember { EngineSettingsStore.loadRenPy(ctx) }
     val globalRpg = remember { EngineSettingsStore.loadRpgMaker(ctx) }
     val rpgWindowMap = rpgWindowSizeOptionsMap()
     val rpgSpeedUpMap = rpgSpeedUpOptionsMap()
@@ -288,6 +296,15 @@ fun PerGameSettingsScreen(game: ScanGame) {
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_RPG_WINDOW_SIZE, rpgm.windowSize)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_RPG_SPEED_UP, rpgm.speedUp)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_RPG_FONT_SCALE, rpgm.fontScale)
+        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_CHEATS, renpy.cheats)
+        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_HW_VIDEO, renpy.hwVideo)
+        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_AUTOSAVE, renpy.autosave)
+        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_PHONE_SMALL_VARIANT, renpy.phoneSmallVariant)
+        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_VSYNC, renpy.vsync)
+        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_LESS_MEMORY, renpy.lessMemory)
+        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_LESS_UPDATES, renpy.lessUpdates)
+        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_DONT_USE_GL2, renpy.dontUseGl2)
+        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_RECOMPILE, renpy.recompile)
     }
 
     MiuixSettingsTheme {
@@ -310,8 +327,11 @@ fun PerGameSettingsScreen(game: ScanGame) {
             },
         ) { innerPadding ->
             LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
-                contentPadding = PaddingValues(top = innerPadding.calculateTopPadding() + 12.dp, bottom = 24.dp),
+                // 顶栏透明：列表整体垫在顶栏下方（持久 padding），避免滚动时内容穿过顶栏
+                modifier = Modifier.fillMaxSize()
+                    .padding(horizontal = 12.dp)
+                    .padding(top = innerPadding.calculateTopPadding()),
+                contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 when (game.engine) {
@@ -448,6 +468,33 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     EngineType.RENPY -> item {
                         SectionCard("Ren'Py") {
                             OverrideChoice(stringResource(R.string.engine_settings_engine_version), renpyVersionMap, globalRenpyVersion, renpyVersion) { renpyVersion = it }
+                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_hw_video), globalRenpy.hwVideo, renpy.hwVideo) {
+                                renpyOverride = renpy.copy(hwVideo = it)
+                            }
+                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_vsync), globalRenpy.vsync, renpy.vsync) {
+                                renpyOverride = renpy.copy(vsync = it)
+                            }
+                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_less_memory), globalRenpy.lessMemory, renpy.lessMemory) {
+                                renpyOverride = renpy.copy(lessMemory = it)
+                            }
+                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_dont_use_gl2), !globalRenpy.dontUseGl2, renpy.dontUseGl2?.let { !it }) {
+                                renpyOverride = renpy.copy(dontUseGl2 = it?.let { v -> !v })
+                            }
+                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_phone_small_variant), globalRenpy.phoneSmallVariant, renpy.phoneSmallVariant) {
+                                renpyOverride = renpy.copy(phoneSmallVariant = it)
+                            }
+                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_autosave), globalRenpy.autosave, renpy.autosave) {
+                                renpyOverride = renpy.copy(autosave = it)
+                            }
+                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_less_updates), globalRenpy.lessUpdates, renpy.lessUpdates) {
+                                renpyOverride = renpy.copy(lessUpdates = it)
+                            }
+                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_recompile), globalRenpy.recompile, renpy.recompile) {
+                                renpyOverride = renpy.copy(recompile = it)
+                            }
+                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_cheats), globalRenpy.cheats, renpy.cheats) {
+                                renpyOverride = renpy.copy(cheats = it)
+                            }
                             Text(
                                 stringResource(R.string.engine_settings_renpy_module_description),
                                 style = MaterialTheme.typography.bodyMedium,
@@ -595,8 +642,8 @@ fun PerGameSettingsScreen(game: ScanGame) {
 @Composable
 private fun SectionCard(title: String, content: @Composable () -> Unit) {
     MiuixCard(
-        modifier = Modifier.fillMaxWidth(),
-        cornerRadius = 8.dp,
+        modifier = Modifier.fillMaxWidth().glassBorder(),
+        cornerRadius = AppComponentCornerRadius,
     ) {
         Column(Modifier.padding(vertical = 6.dp)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {

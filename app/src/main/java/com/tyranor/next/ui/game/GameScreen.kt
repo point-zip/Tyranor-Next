@@ -45,8 +45,8 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -113,10 +113,18 @@ import com.tyranor.next.core.i18n.AppLocaleController
 import com.tyranor.next.core.settings.AppSettingsStore
 import com.tyranor.next.core.auth.HikarinagiAuthStore
 import com.tyranor.next.core.settings.PerGameSettingsStore
+import com.tyranor.next.theme.AppThemeColors
+import com.tyranor.next.theme.DialogItemSurface
+import com.tyranor.next.theme.GlassBorder
+import com.tyranor.next.theme.GlassPanel
+import com.tyranor.next.theme.GlassPanelSolid
+import com.tyranor.next.theme.GlassSurfaceSolid
 import com.tyranor.next.theme.MiuixSettingsTheme
 import com.tyranor.next.theme.NavWhite
-import com.tyranor.next.theme.PageGrey
 import com.tyranor.next.theme.TextColor
+import com.tyranor.next.theme.glassBorder
+import com.tyranor.next.theme.AppComponentShape
+import com.tyranor.next.theme.AppSheetTopShape
 import com.tyranor.next.ui.common.AppAlertDialog
 import com.tyranor.next.ui.common.AppNavItem
 import com.tyranor.next.ui.common.AppSearchField
@@ -745,6 +753,9 @@ internal fun GameActionsSheet(
         }
     }
 
+    // 玻璃风格抽屉：面板与条目均用不透明色，任何一层都不透底
+    val drawerItemSurface = if (AppThemeColors.isGlass) GlassSurfaceSolid else NavWhite
+
     ModalBottomSheet(
         onDismissRequest = {
             // 关闭抽屉时一并清除裁切弹窗状态，避免 rememberSaveable 在下一次打开时残留旧弹窗
@@ -753,10 +764,27 @@ internal fun GameActionsSheet(
             onDismiss()
         },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = MaterialTheme.colorScheme.background,
+        // 玻璃风格抽屉使用不透明面板色（GlassPanel 带 10% 透明度会透出底层内容）
+        containerColor = if (AppThemeColors.isGlass) GlassPanelSolid else MaterialTheme.colorScheme.background,
+        // 玻璃风格加深化背景，避免抽屉与底层内容混在一起被看成半透明
+        scrimColor = if (AppThemeColors.isGlass) Color.Black.copy(alpha = 0.6f) else Color.Black.copy(alpha = 0.32f),
         contentWindowInsets = { WindowInsets(0.dp) },
         // 顶部圆角与弹窗内条目圆角（AppNavItem 8dp）保持一致
-        shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp),
+        shape = AppSheetTopShape,
+        // 玻璃描边只能画在抽屉真实顶边（dragHandle 槽首位）；不能挂 Surface 外层 modifier，
+        // 否则描边会按未偏移的布局位置落到背景里形成一条白线
+        dragHandle = {
+            // Column 默认水平 Start 对齐会让把手贴左；需显式居中，描边线仍铺满整宽
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                if (AppThemeColors.isGlass) {
+                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(GlassBorder))
+                }
+                BottomSheetDefaults.DragHandle()
+            }
+        },
     ) {
         // 小平板横屏下屏幕高度可能 < 560dp，硬编码会导致抽屉填满屏幕，
         // SwipeableState 无法区分滚动/收起，快速滑动时高速振荡（issue #27）。
@@ -784,7 +812,7 @@ internal fun GameActionsSheet(
                 AppNavItem(
                     title = stringResource(R.string.game_launch_action),
                     leadingIcon = R.drawable.ic_sheet_launch,
-                    containerColor = NavWhite,
+                    containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                     showArrow = false,
                     leadingIconTint = MaterialTheme.colorScheme.primary,
@@ -797,7 +825,7 @@ internal fun GameActionsSheet(
                         title = stringResource(R.string.game_launch_file),
                         summary = game.launchFile ?: stringResource(R.string.game_launch_file_auto_summary),
                         leadingIcon = R.drawable.ic_sheet_launch_file,
-                        containerColor = NavWhite,
+                        containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                         showArrow = false,
                         leadingIconTint = MaterialTheme.colorScheme.primary,
@@ -809,7 +837,7 @@ internal fun GameActionsSheet(
                 AppNavItem(
                     title = if (quickLaunched) stringResource(R.string.game_remove_quick_launch) else stringResource(R.string.game_add_quick_launch),
                     leadingIcon = R.drawable.ic_home,
-                    containerColor = NavWhite,
+                    containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                     showArrow = false,
                     leadingIconTint = MaterialTheme.colorScheme.primary,
@@ -826,7 +854,7 @@ internal fun GameActionsSheet(
                 AppNavItem(
                     title = stringResource(R.string.game_add_desktop_shortcut),
                     leadingIcon = R.drawable.ic_sheet_desktop_shortcut,
-                    containerColor = NavWhite,
+                    containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                     showArrow = false,
                     leadingIconTint = MaterialTheme.colorScheme.primary,
@@ -837,7 +865,7 @@ internal fun GameActionsSheet(
                 AppNavItem(
                     title = stringResource(R.string.game_search_cover),
                     leadingIcon = R.drawable.ic_sheet_search_cover,
-                    containerColor = NavWhite,
+                    containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                     showArrow = false,
                     leadingIconTint = MaterialTheme.colorScheme.primary,
@@ -848,7 +876,7 @@ internal fun GameActionsSheet(
                 AppNavItem(
                     title = stringResource(R.string.game_edit_cover),
                     leadingIcon = R.drawable.ic_sheet_edit_cover,
-                    containerColor = NavWhite,
+                    containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                     showArrow = false,
                     leadingIconTint = MaterialTheme.colorScheme.primary,
@@ -859,7 +887,7 @@ internal fun GameActionsSheet(
                 AppNavItem(
                     title = stringResource(R.string.game_rename),
                     leadingIcon = R.drawable.ic_sheet_rename,
-                    containerColor = NavWhite,
+                    containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                     showArrow = false,
                     leadingIconTint = MaterialTheme.colorScheme.primary,
@@ -871,7 +899,7 @@ internal fun GameActionsSheet(
                     AppNavItem(
                         title = stringResource(R.string.game_save_management),
                         leadingIcon = R.drawable.ic_sheet_saves,
-                        containerColor = NavWhite,
+                        containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                         leadingIconTint = MaterialTheme.colorScheme.primary,
                         onClick = {
@@ -886,7 +914,7 @@ internal fun GameActionsSheet(
                     AppNavItem(
                         title = stringResource(R.string.game_online_patch),
                         leadingIcon = R.drawable.ic_sheet_patch,
-                        containerColor = NavWhite,
+                        containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                         leadingIconTint = MaterialTheme.colorScheme.primary,
                         onClick = {
@@ -900,7 +928,7 @@ internal fun GameActionsSheet(
                 AppNavItem(
                     title = stringResource(R.string.settings_engine_settings),
                     leadingIcon = R.drawable.ic_sheet_settings,
-                    containerColor = NavWhite,
+                    containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                     leadingIconTint = MaterialTheme.colorScheme.primary,
                     onClick = onEngineSettings,
@@ -910,7 +938,7 @@ internal fun GameActionsSheet(
                 AppNavItem(
                     title = stringResource(R.string.game_delete_title),
                     leadingIcon = R.drawable.ic_sheet_delete,
-                    containerColor = NavWhite,
+                    containerColor = drawerItemSurface,
                         verticalPadding = 17.dp,
                     showArrow = false,
                     leadingIconTint = MaterialTheme.colorScheme.error,
@@ -1226,8 +1254,10 @@ private fun CoverSearchDialog(
                         .fillMaxWidth()
                         .widthIn(max = CoverSearchDialogMaxWidth)
                         .then(dialogHeightModifier)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(NavWhite)
+                        .clip(AppComponentShape)
+                        // 玻璃风格用高不透明度玻璃面板，保证覆盖在暗化内容上的可读性
+                        .background(if (AppThemeColors.isGlass) GlassPanel else NavWhite)
+                        .glassBorder()
                         .pointerInput(Unit) { detectTapGestures { } },
                 ) {
                     Column(Modifier.fillMaxSize()) {
@@ -1372,8 +1402,9 @@ private fun CoverCandidateCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(3f / 4f)
-                .clip(RoundedCornerShape(8.dp))
-                .background(PageGrey),
+                .clip(AppComponentShape)
+                // 占位底色：默认风格 PageGrey，玻璃风格亮玻璃面（避免透明占位不可见）
+                .background(DialogItemSurface),
             contentAlignment = Alignment.Center,
         ) {
             when (val state = previewState) {
@@ -1423,7 +1454,7 @@ private fun CoverCandidateOverlay(candidate: CoverSearchCandidate) {
                 color = MaterialTheme.colorScheme.primary,
                 maxLines = 1,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(AppComponentShape)
                     .background(NavWhite.copy(alpha = 0.9f))
                     .padding(horizontal = 6.dp, vertical = 2.dp),
             )
@@ -1434,7 +1465,7 @@ private fun CoverCandidateOverlay(candidate: CoverSearchCandidate) {
                     color = NavWhite,
                     maxLines = 1,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(AppComponentShape)
                         .background(TextColor.copy(alpha = 0.56f))
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                 )
@@ -1447,7 +1478,7 @@ private fun CoverCandidateOverlay(candidate: CoverSearchCandidate) {
             maxLines = 1,
             modifier = Modifier
                 .align(Alignment.End)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(AppComponentShape)
                 .background(TextColor.copy(alpha = 0.56f))
                 .padding(horizontal = 8.dp, vertical = 3.dp),
         )
@@ -1510,8 +1541,9 @@ private fun LaunchFileDialog(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(PageGrey)
+                                    .clip(AppComponentShape)
+                                    // 弹窗内条目底色：默认风格 PageGrey，玻璃风格亮玻璃面
+                                    .background(DialogItemSurface)
                                     .clickable { selected = name }
                                     .padding(horizontal = 12.dp, vertical = 9.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -1619,8 +1651,9 @@ internal fun GameCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(3f / 4f)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(AppComponentShape)
                 .background(game.engine.coverColor())
+                .glassBorder()
                 .then(pressModifier),
             contentAlignment = Alignment.Center,
         ) {

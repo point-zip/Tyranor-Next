@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material3.Button
@@ -53,6 +52,8 @@ import com.tyranor.next.core.patch.KrkrPatchEntry
 import com.tyranor.next.core.game.model.ScanGame
 import com.tyranor.next.core.game.model.ScanGameIntents
 import com.tyranor.next.theme.NavWhite
+import com.tyranor.next.theme.glassBorder
+import com.tyranor.next.theme.AppComponentShape
 import com.tyranor.next.ui.common.AppScreenActivity
 import com.tyranor.next.ui.common.AppTopBar
 import com.tyranor.next.ui.common.AppSearchField
@@ -234,10 +235,10 @@ private fun PatchEntryCard(
     val selected = entry.patches.filter { checked[it] == true }
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().glassBorder(),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         colors = CardDefaults.cardColors(containerColor = NavWhite),
-        shape = RoundedCornerShape(8.dp),
+        shape = AppComponentShape,
     ) {
         Column(Modifier.fillMaxWidth().padding(14.dp)) {
             Text(

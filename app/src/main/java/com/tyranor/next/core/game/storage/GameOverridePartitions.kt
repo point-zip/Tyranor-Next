@@ -62,6 +62,16 @@ internal object GameOverridePartitions {
     const val KEY_RPG_FONT_SCALE = "rpg_font_scale"
     const val KEY_TY_SCOPED = "ty_scoped"
     const val KEY_RENPY_VERSION = "renpy_engine_version"
+    // Ren'Py 外置模块配置覆盖键（与 PerGameSettingsStore.F_RENPY_* 字面量锚定）
+    const val KEY_RENPY_CHEATS = "renpy_cheats"
+    const val KEY_RENPY_HW_VIDEO = "renpy_hw_video"
+    const val KEY_RENPY_AUTOSAVE = "renpy_autosave"
+    const val KEY_RENPY_PHONE_SMALL_VARIANT = "renpy_phonesmallvariant"
+    const val KEY_RENPY_VSYNC = "renpy_vsync"
+    const val KEY_RENPY_LESS_MEMORY = "renpy_less_memory"
+    const val KEY_RENPY_LESS_UPDATES = "renpy_less_updates"
+    const val KEY_RENPY_DONT_USE_GL2 = "renpy_dont_use_gl2"
+    const val KEY_RENPY_RECOMPILE = "renpy_recompile"
     const val ONS_OBJECT_KEY = "ons"
 
     val KR_KEYS: Set<String> = setOf(
@@ -85,7 +95,13 @@ internal object GameOverridePartitions {
         KEY_RPG_CUSTOM_FONT, KEY_RPG_VERTICAL_SCREEN_ALIGN, KEY_RPG_WINDOW_SIZE,
         KEY_RPG_SPEED_UP, KEY_RPG_FONT_SCALE,
     )
-    val RENPY_KEYS: Set<String> = setOf(KEY_RENPY_VERSION)
+    // Ren'Py 分区：版本选择 + 外置模块配置，显式建模防止未来收紧分区时丢键
+    val RENPY_KEYS: Set<String> = setOf(
+        KEY_RENPY_VERSION,
+        KEY_RENPY_CHEATS, KEY_RENPY_HW_VIDEO, KEY_RENPY_AUTOSAVE,
+        KEY_RENPY_PHONE_SMALL_VARIANT, KEY_RENPY_VSYNC, KEY_RENPY_LESS_MEMORY,
+        KEY_RENPY_LESS_UPDATES, KEY_RENPY_DONT_USE_GL2, KEY_RENPY_RECOMPILE,
+    )
     val TOUCHPAD_KEYS: Set<String> = setOf(TOUCH_PAD_CONFIG_KEY, TOUCH_PAD_PRESETS_KEY)
 
     /** 整条 blob → 分区行；updatedAt 由调用方给出。 */

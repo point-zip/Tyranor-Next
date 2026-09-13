@@ -47,6 +47,17 @@ object EngineSettingsStore {
     // Ren'Py 应用级默认（外置模块版本选择）
     const val KEY_RENPY_ENGINE_VERSION = "renpy_engine_version"
 
+    // Ren'Py 外置模块（settings extra 的 renpy 节；cheats 发 app 节，键名与 RenPyConfigurationParser 一致）
+    const val KEY_RENPY_CHEATS = "renpy_cheats"
+    const val KEY_RENPY_HW_VIDEO = "renpy_hw_video"
+    const val KEY_RENPY_AUTOSAVE = "renpy_autosave"
+    const val KEY_RENPY_PHONE_SMALL_VARIANT = "renpy_phonesmallvariant"
+    const val KEY_RENPY_VSYNC = "renpy_vsync"
+    const val KEY_RENPY_LESS_MEMORY = "renpy_less_memory"
+    const val KEY_RENPY_LESS_UPDATES = "renpy_less_updates"
+    const val KEY_RENPY_DONT_USE_GL2 = "renpy_dont_use_gl2"
+    const val KEY_RENPY_RECOMPILE = "renpy_recompile"
+
     // Tyrano 与 RPG Maker Web 共用同一套 WebView 宿主设置；启动链路按同一键读取。
     const val KEY_TYRANO_EXTERNAL_NETWORK = "tyrano_external_network"
     const val KEY_TYRANO_SCOPED_SAVE_DIR = "tyrano_scoped_save_dir"
@@ -606,5 +617,66 @@ object EngineSettingsStore {
     fun normalizeRpgVerticalAlign(v: String?): String {
         val t = v?.trim().orEmpty()
         return if (t in RPG_VERTICAL_ALIGNS) t else RPG_VERTICAL_ALIGN_DEFAULT
+    }
+
+    // ---------- Ren'Py 外置模块 ----------
+
+    /**
+     * Ren'Py 外置模块的配置节。默认值对齐 JoiPlay `SettingsFactory.loadDefault` 与插件
+     * `RenPyConfiguration`：hw_video/cheats 默认开，其余默认关。
+     */
+    data class RenPy(
+        var cheats: Boolean = true,
+        var hwVideo: Boolean = true,
+        var autosave: Boolean = false,
+        var phoneSmallVariant: Boolean = false,
+        var vsync: Boolean = false,
+        var lessMemory: Boolean = false,
+        var lessUpdates: Boolean = false,
+        var dontUseGl2: Boolean = false,
+        var recompile: Boolean = false,
+    )
+
+    private val RENPY_BOOL_KEYS = listOf(
+        KEY_RENPY_CHEATS, KEY_RENPY_HW_VIDEO, KEY_RENPY_AUTOSAVE,
+        KEY_RENPY_PHONE_SMALL_VARIANT, KEY_RENPY_VSYNC, KEY_RENPY_LESS_MEMORY,
+        KEY_RENPY_LESS_UPDATES, KEY_RENPY_DONT_USE_GL2, KEY_RENPY_RECOMPILE,
+    )
+
+    fun loadRenPy(c: Context): RenPy {
+        val p = prefs(c)
+        val d = RenPy()
+        return RenPy(
+            cheats = p.getBoolean(KEY_RENPY_CHEATS, d.cheats),
+            hwVideo = p.getBoolean(KEY_RENPY_HW_VIDEO, d.hwVideo),
+            autosave = p.getBoolean(KEY_RENPY_AUTOSAVE, d.autosave),
+            phoneSmallVariant = p.getBoolean(KEY_RENPY_PHONE_SMALL_VARIANT, d.phoneSmallVariant),
+            vsync = p.getBoolean(KEY_RENPY_VSYNC, d.vsync),
+            lessMemory = p.getBoolean(KEY_RENPY_LESS_MEMORY, d.lessMemory),
+            lessUpdates = p.getBoolean(KEY_RENPY_LESS_UPDATES, d.lessUpdates),
+            dontUseGl2 = p.getBoolean(KEY_RENPY_DONT_USE_GL2, d.dontUseGl2),
+            recompile = p.getBoolean(KEY_RENPY_RECOMPILE, d.recompile),
+        )
+    }
+
+    fun saveRenPy(c: Context, r: RenPy) {
+        prefs(c).edit().apply {
+            putBoolean(KEY_RENPY_CHEATS, r.cheats)
+            putBoolean(KEY_RENPY_HW_VIDEO, r.hwVideo)
+            putBoolean(KEY_RENPY_AUTOSAVE, r.autosave)
+            putBoolean(KEY_RENPY_PHONE_SMALL_VARIANT, r.phoneSmallVariant)
+            putBoolean(KEY_RENPY_VSYNC, r.vsync)
+            putBoolean(KEY_RENPY_LESS_MEMORY, r.lessMemory)
+            putBoolean(KEY_RENPY_LESS_UPDATES, r.lessUpdates)
+            putBoolean(KEY_RENPY_DONT_USE_GL2, r.dontUseGl2)
+            putBoolean(KEY_RENPY_RECOMPILE, r.recompile)
+        }.apply()
+    }
+
+    /** 仅重置 renpy 节，版本键（renpy_engine_version）保留。 */
+    fun resetRenPy(c: Context) {
+        val editor = prefs(c).edit()
+        RENPY_BOOL_KEYS.forEach(editor::remove)
+        editor.apply()
     }
 }

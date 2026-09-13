@@ -24,6 +24,10 @@
     <string name="settings_language_ja">日本語</string>
     <string name="settings_language_en">English</string>
     <string name="settings_color_wheel">色调轮盘</string>
+    <string name="settings_appearance_style">外观风格</string>
+    <string name="settings_appearance_style_default">默认</string>
+    <string name="settings_appearance_style_glass">玻璃</string>
+    <string name="settings_disabled_in_glass_style">玻璃风格下不可用</string>
     <string name="settings_theme_mode">外观模式</string>
     <string name="settings_theme_mode_light">浅色</string>
     <string name="settings_theme_mode_dark">深色</string>
@@ -228,7 +232,7 @@
     <string name="save_sync_unmapped">另有 %1$d 个无法识别的存档未互通</string>
     <string name="engine_settings_engine_version_mv">引擎版本 - MV</string>
     <string name="engine_settings_engine_version_mz">引擎版本 - MZ</string>
-    <string name="engine_settings_renpy_module_description">Ren’Py 使用外置 APK 引擎模块，按指定版本打开对应的插件；模块安装后默认启用。</string>
+    <string name="engine_settings_renpy_module_description">Ren’Py 使用外置 APK 引擎模块，按指定版本打开对应的插件；以下设置默认跟随全局，可按游戏单独覆盖。</string>
     <string name="engine_settings_renpy_module_description_global">Ren’Py 使用外置 APK 引擎模块，按指定版本打开对应的插件。</string>
     <string name="engine_settings_rpgmaker_module_description">RPG Maker XP/VX/VX Ace/mkxp-z 通过外置 RPGM 模块启动，以下设置默认跟随全局，可按游戏单独覆盖。</string>
     <string name="engine_settings_follow_global">跟随全局</string>
@@ -437,6 +441,21 @@
     <string name="engine_settings_rpgm_rtp_from_dir">选择文件夹</string>
     <string name="engine_settings_rpgm_reset_defaults">恢复默认设置</string>
     <string name="engine_settings_rpgm_reset_confirm">仅重置 RPG Maker RGSS 外置模块设置，保存后生效。</string>
+
+    <string name="engine_settings_renpy_card">Ren’Py 模块设置</string>
+    <string name="engine_settings_renpy_group_performance">渲染与性能</string>
+    <string name="engine_settings_renpy_group_save">存档与更新</string>
+    <string name="engine_settings_renpy_advanced">高级设置</string>
+    <string name="engine_settings_renpy_advanced_hint">重新编译、金手指等低优先级选项</string>
+    <string name="engine_settings_renpy_hw_video">硬件视频解码</string>
+    <string name="engine_settings_renpy_autosave">自动存档</string>
+    <string name="engine_settings_renpy_phone_small_variant">手机版变体</string>
+    <string name="engine_settings_renpy_vsync">垂直同步</string>
+    <string name="engine_settings_renpy_less_memory">低内存模式</string>
+    <string name="engine_settings_renpy_less_updates">减少更新检查</string>
+    <string name="engine_settings_renpy_dont_use_gl2">禁用模型渲染（GL2）</string>
+    <string name="engine_settings_renpy_recompile">重新编译脚本</string>
+    <string name="engine_settings_renpy_cheats">金手指</string>
 
     <string name="plugin_unknown_engine">未知引擎插件：%1$s</string>
     <string name="plugin_install_failed">引擎插件安装失败，请重启应用或检查安装包完整性</string>

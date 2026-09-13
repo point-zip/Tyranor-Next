@@ -132,6 +132,28 @@ object EffectiveEngineSettings {
             ),
         )
     }
+
+    /**
+     * Ren'Py 外置模块全局设置 + 单游戏覆盖合并：布尔字段「覆盖 ?: 全局」。
+     * 版本选择链路（renpyVersion/detectedRenpyVersion）不在此模型内。
+     */
+    fun mergeRenPy(
+        global: EngineSettingsStore.RenPy,
+        override: RenPyOverride?,
+    ): EngineSettingsStore.RenPy {
+        if (override == null) return global
+        return global.copy(
+            cheats = resolveBool(override.cheats, global.cheats),
+            hwVideo = resolveBool(override.hwVideo, global.hwVideo),
+            autosave = resolveBool(override.autosave, global.autosave),
+            phoneSmallVariant = resolveBool(override.phoneSmallVariant, global.phoneSmallVariant),
+            vsync = resolveBool(override.vsync, global.vsync),
+            lessMemory = resolveBool(override.lessMemory, global.lessMemory),
+            lessUpdates = resolveBool(override.lessUpdates, global.lessUpdates),
+            dontUseGl2 = resolveBool(override.dontUseGl2, global.dontUseGl2),
+            recompile = resolveBool(override.recompile, global.recompile),
+        )
+    }
 }
 
 /** RPG Maker RGSS 外置模块单游戏覆盖字段（null = 跟随全局）。 */
@@ -154,6 +176,19 @@ data class RpgMakerOverride(
     val windowSize: String? = null,
     val speedUp: String? = null,
     val fontScale: String? = null,
+)
+
+/** Ren'Py 外置模块单游戏覆盖字段（null = 跟随全局）。 */
+data class RenPyOverride(
+    val cheats: Boolean? = null,
+    val hwVideo: Boolean? = null,
+    val autosave: Boolean? = null,
+    val phoneSmallVariant: Boolean? = null,
+    val vsync: Boolean? = null,
+    val lessMemory: Boolean? = null,
+    val lessUpdates: Boolean? = null,
+    val dontUseGl2: Boolean? = null,
+    val recompile: Boolean? = null,
 )
 
 /** ONS 单游戏覆盖字段（null = 跟随全局）。 */
