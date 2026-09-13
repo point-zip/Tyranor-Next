@@ -146,9 +146,10 @@
 
 - 顶部栏**使用页面背景色** **`colorScheme.background`（不透明）**（`Modifier.background(colorScheme.background)`），标题与图标统一使用 `colorScheme.onBackground`。
 
-- **玻璃外观风格例外**：玻璃下页面背景透明，但顶栏必须渲染为不透明实色（`AppTopBar` 内部统一改用
-  `GlassTopBarSurface`，与渐变顶部同色）。因为设置类页面（MiuixScaffold）的内容会从顶栏下方滚过，
-  透明会导致滚过的文字与标题重叠；所有页面顶栏背景由此保持统一。
+- **玻璃外观风格**：玻璃下页面背景透明，顶栏保持透明（露出渐变/环境光）。因此**页面内容必须整体垫在
+  顶栏下方**（用持久 `Modifier.padding(top = 顶栏高度)`，而不是滚动区的 `contentPadding`），
+  否则滚动内容会从顶栏下方穿过与标题重叠。设置类页面（MiuixScaffold）的 `innerPadding` 顶部值一律
+  加到列表 modifier 上，`contentPadding` 只保留额外的间距。
 
 - 禁止使用主题色 `primary` 作为顶部栏背景。
 

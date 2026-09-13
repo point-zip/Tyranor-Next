@@ -19,8 +19,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
- * 应用根背景统一组件：玻璃外观风格为黑灰渐变 + 顶部环境光晕（三档竖向渐变：
- * 冷灰顶 → 中灰过渡 → 近黑底，叠加一层自顶向下的低透明度白色径向光晕，避免纯色渐变发闷）；
+ * 应用根背景统一组件：玻璃外观风格为黑灰渐变 + 环境光层（三档竖向渐变：
+ * 冷灰顶 → 中灰过渡 → 近黑底，叠加白色顶部光晕 + 主题色对角环境光——
+ * 右上为主、左下为辅，随「色调轮盘」实时变色，让玻璃面有颜色可透、避免叠在纯黑上没质感）；
  * 默认风格沿用主题页面背景色。所有顶层组合（MainActivity / AppScreenScaffold）必须经本组件
  * 包裹，否则透明页面背景会露出窗口底色。内部保留 Surface 以维持 contentColor 语义。
  */
@@ -34,6 +35,7 @@ fun GlassBackground(
         color = Color.Transparent,
         contentColor = MaterialTheme.colorScheme.onBackground,
     ) {
+        val accent = AppThemeColors.primary
         val backgroundModifier = if (AppThemeColors.isGlass) {
             Modifier.drawWithCache {
                 val baseBrush = Brush.verticalGradient(
@@ -43,15 +45,28 @@ fun GlassBackground(
                         1f to GlassBgBottom,
                     ),
                 )
-                // 顶部环境光：圆心略高于屏幕顶端，半径约 55% 屏高，只做微弱层次不做提亮
-                val glowBrush = Brush.radialGradient(
+                // 顶部白色环境光：圆心略高于屏幕顶端，半径约 55% 屏高，只做微弱层次
+                val topGlow = Brush.radialGradient(
                     colors = listOf(GlassBgGlow, Color.Transparent),
                     center = Offset(size.width * 0.5f, -size.height * 0.08f),
                     radius = size.height * 0.55f,
                 )
+                // 主题色环境光：右上（主，位于顶栏下方、卡片区内，透过玻璃可见）+ 左下（辅，补对角深度）
+                val accentTopGlow = Brush.radialGradient(
+                    colors = listOf(accent.copy(alpha = 0.26f), Color.Transparent),
+                    center = Offset(size.width * 0.85f, size.height * 0.22f),
+                    radius = size.width * 1.05f,
+                )
+                val accentBottomGlow = Brush.radialGradient(
+                    colors = listOf(accent.copy(alpha = 0.12f), Color.Transparent),
+                    center = Offset(size.width * 0.10f, size.height * 0.78f),
+                    radius = size.width,
+                )
                 onDrawBehind {
                     drawRect(baseBrush)
-                    drawRect(glowBrush)
+                    drawRect(topGlow)
+                    drawRect(accentTopGlow)
+                    drawRect(accentBottomGlow)
                 }
             }
         } else {

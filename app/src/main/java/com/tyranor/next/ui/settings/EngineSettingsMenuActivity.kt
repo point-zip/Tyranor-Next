@@ -67,9 +67,12 @@ internal fun EngineSettingsMenuScreen() {
             },
         ) { innerPadding ->
             LazyColumn(
-                modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                // 顶栏透明：列表整体垫在顶栏下方（持久 padding），避免滚动时内容穿过顶栏
+                modifier = Modifier.fillMaxSize()
+                    .padding(horizontal = 12.dp)
+                    .padding(top = innerPadding.calculateTopPadding()),
                 contentPadding = PaddingValues(
-                    top = innerPadding.calculateTopPadding() + 12.dp,
+                    top = 12.dp,
                     bottom = 24.dp,
                 ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
