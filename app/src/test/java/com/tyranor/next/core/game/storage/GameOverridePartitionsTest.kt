@@ -162,4 +162,32 @@ class GameOverridePartitionsTest {
         }
         assertEquals(blob.length(), GameOverridePartitions.assemble(row).length())
     }
+
+    @Test
+    fun renPyModuleKeysArePartitionedIntoRenpy() {
+        val pairs = listOf(
+            GameOverridePartitions.KEY_RENPY_CHEATS to PerGameSettingsStore.F_RENPY_CHEATS,
+            GameOverridePartitions.KEY_RENPY_HW_VIDEO to PerGameSettingsStore.F_RENPY_HW_VIDEO,
+            GameOverridePartitions.KEY_RENPY_AUTOSAVE to PerGameSettingsStore.F_RENPY_AUTOSAVE,
+            GameOverridePartitions.KEY_RENPY_PHONE_SMALL_VARIANT to PerGameSettingsStore.F_RENPY_PHONE_SMALL_VARIANT,
+            GameOverridePartitions.KEY_RENPY_VSYNC to PerGameSettingsStore.F_RENPY_VSYNC,
+            GameOverridePartitions.KEY_RENPY_LESS_MEMORY to PerGameSettingsStore.F_RENPY_LESS_MEMORY,
+            GameOverridePartitions.KEY_RENPY_LESS_UPDATES to PerGameSettingsStore.F_RENPY_LESS_UPDATES,
+            GameOverridePartitions.KEY_RENPY_DONT_USE_GL2 to PerGameSettingsStore.F_RENPY_DONT_USE_GL2,
+            GameOverridePartitions.KEY_RENPY_RECOMPILE to PerGameSettingsStore.F_RENPY_RECOMPILE,
+        )
+        val blob = JSONObject()
+        pairs.forEach { (partitionKey, perGameKey) ->
+            assertEquals(perGameKey, partitionKey)
+            assertTrue("Ren'Py 分区缺少字段 $perGameKey", perGameKey in GameOverridePartitions.RENPY_KEYS)
+            blob.put(perGameKey, true)
+        }
+
+        val row = GameOverridePartitions.split("/games/renpy", blob, 1L)
+        val renpyPartition = JSONObject(row.renpyJson!!)
+        pairs.forEach { (_, perGameKey) ->
+            assertTrue(renpyPartition.has(perGameKey))
+        }
+        assertEquals(blob.length(), GameOverridePartitions.assemble(row).length())
+    }
 }

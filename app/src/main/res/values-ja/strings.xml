@@ -226,7 +226,7 @@
     <string name="engine_settings_legacy_renderer">PIXI 互換レンダリング（TynMVエンジン セッションのみ有効）</string>
     <string name="engine_settings_engine_version_mv">エンジンバージョン - MV</string>
     <string name="engine_settings_engine_version_mz">エンジンバージョン - MZ</string>
-    <string name="engine_settings_renpy_module_description">Ren’Py は外部 APK エンジンモジュールを使用し、指定バージョンに対応するプラグインで開きます。モジュールのインストール後は既定で有効です。</string>
+    <string name="engine_settings_renpy_module_description">Ren’Py は外部 APK エンジンモジュールを使用し、指定バージョンに対応するプラグインで開きます。以下の設定は既定で全体設定に従い、ゲームごとに個別に上書きできます。</string>
     <string name="engine_settings_renpy_module_description_global">Ren’Py は外部 APK エンジンモジュールを使用し、指定バージョンに対応するプラグインで開きます。</string>
     <string name="engine_settings_rpgmaker_module_description">RPG Maker XP/VX/VX Ace/mkxp-z は外部 RPGM モジュールで起動します。以下の設定は既定で全体設定に従い、ゲームごとに個別に上書きできます。</string>
     <string name="engine_settings_follow_global">全体設定に従う</string>
@@ -422,6 +422,21 @@
     <string name="engine_settings_rpgm_rtp_from_dir">フォルダを選択</string>
     <string name="engine_settings_rpgm_reset_defaults">デフォルトに戻す</string>
     <string name="engine_settings_rpgm_reset_confirm">RPG Maker RGSS モジュールの設定のみをリセットします（保存後に反映）。</string>
+
+    <string name="engine_settings_renpy_card">Ren’Py モジュール設定</string>
+    <string name="engine_settings_renpy_group_performance">レンダリングとパフォーマンス</string>
+    <string name="engine_settings_renpy_group_save">セーブと更新</string>
+    <string name="engine_settings_renpy_advanced">詳細設定</string>
+    <string name="engine_settings_renpy_advanced_hint">再コンパイル・チートなど低優先度の項目</string>
+    <string name="engine_settings_renpy_hw_video">ハードウェア動画デコード</string>
+    <string name="engine_settings_renpy_autosave">オートセーブ</string>
+    <string name="engine_settings_renpy_phone_small_variant">スマホ向けバリアント</string>
+    <string name="engine_settings_renpy_vsync">垂直同期</string>
+    <string name="engine_settings_renpy_less_memory">低メモリモード</string>
+    <string name="engine_settings_renpy_less_updates">更新確認を減らす</string>
+    <string name="engine_settings_renpy_dont_use_gl2">モデルベース描画を無効化（GL2）</string>
+    <string name="engine_settings_renpy_recompile">スクリプトを再コンパイル</string>
+    <string name="engine_settings_renpy_cheats">チート</string>
 
     <string name="plugin_unknown_engine">不明なエンジンプラグイン：%1$s</string>
     <string name="plugin_install_failed">エンジンプラグインのインストールに失敗しました。アプリを再起動するか、インストールパッケージの完全性を確認してください</string>

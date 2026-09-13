@@ -192,4 +192,33 @@ class EffectiveEngineSettingsTest {
         val merged = EffectiveEngineSettings.mergeRpgMaker(global, RpgMakerOverride(customFont = ""))
         assertEquals("", merged.customFont)
     }
+
+    @Test
+    fun mergeRenPyFollowsGlobalWhenNoOverride() {
+        val global = EngineSettingsStore.RenPy(lessMemory = true, autosave = true)
+        assertEquals(global, EffectiveEngineSettings.mergeRenPy(global, null))
+        assertEquals(global, EffectiveEngineSettings.mergeRenPy(global, RenPyOverride()))
+    }
+
+    @Test
+    fun mergeRenPyAppliesFieldOverridesOnly() {
+        val global = EngineSettingsStore.RenPy(
+            cheats = true,
+            hwVideo = true,
+            autosave = false,
+            lessMemory = false,
+            dontUseGl2 = false,
+        )
+        val merged = EffectiveEngineSettings.mergeRenPy(
+            global,
+            RenPyOverride(cheats = false, autosave = true, dontUseGl2 = true),
+        )
+
+        assertFalse(merged.cheats)
+        assertTrue(merged.autosave)
+        assertTrue(merged.dontUseGl2)
+        // 未覆盖字段保持全局
+        assertTrue(merged.hwVideo)
+        assertFalse(merged.lessMemory)
+    }
 }

@@ -705,6 +705,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
     var rpgMzVersion by remember { mutableStateOf(EngineSettingsStore.getRpgMzEngineVersion(ctx)) }
     var rpg by remember { mutableStateOf(EngineSettingsStore.loadRpgMaker(ctx)) }
     var renpyVersion by remember { mutableStateOf(EngineSettingsStore.getRenpyVersion(ctx)) }
+    var renpy by remember { mutableStateOf(EngineSettingsStore.loadRenPy(ctx)) }
 
     val fontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -755,6 +756,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
         EngineSettingsStore.setRpgMzEngineVersion(ctx, rpgMzVersion)
         EngineSettingsStore.saveRpgMaker(ctx, rpg)
         EngineSettingsStore.setRenpyVersion(ctx, renpyVersion)
+        EngineSettingsStore.saveRenPy(ctx, renpy)
     }
 
     MiuixSettingsTheme {
@@ -782,7 +784,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
                 krSwCompress, krOglCompress, krMem, krTexsize, krAccurate, krFps, isSdl3, krIs134126,
                 krVCursorScale, krMenuOpa, krPatchOverlayMode, krAnime4k,
                 ons, artVersion, artRotate, artPatch, artResolution, artSideCut, artSurfaceCache,
-                artFontCache, artPowerSaving, tyExternal, tyScoped, rpgMakerMod, rpgLegacyRenderer, rpgMvVersion, rpgMzVersion, rpg, renpyVersion, fontLauncher,
+                artFontCache, artPowerSaving, tyExternal, tyScoped, rpgMakerMod, rpgLegacyRenderer, rpgMvVersion, rpgMzVersion, rpg, renpyVersion, renpy, fontLauncher,
                 topInset = innerPadding.calculateTopPadding(),
                 onKrVersion = { krVersion = it },
                 onKrKernel = { krKernel = it },
@@ -819,6 +821,7 @@ internal fun EngineSettingsDetailScreen(kind: EngineSettingsKind) {
                 onRpgMzVersion = { rpgMzVersion = it },
                 onRpg = { rpg = it },
                 onRenpyVersion = { renpyVersion = it },
+                onRenpy = { renpy = it },
             )
         }
     }
@@ -864,7 +867,7 @@ private fun LazyListPlaceholder(
     artPowerSaving: String, tyExternal: Boolean, tyScoped: Boolean, rpgMakerMod: Boolean,
     rpgLegacyRenderer: Boolean, rpgMvVersion: String, rpgMzVersion: String,
     rpg: EngineSettingsStore.RpgMaker,
-    renpyVersion: String, fontLauncher: FontPickerLauncher,
+    renpyVersion: String, renpy: EngineSettingsStore.RenPy, fontLauncher: FontPickerLauncher,
     topInset: Dp,
     onKrVersion: (String) -> Unit, onKrKernel: (String) -> Unit, onKrScoped: (Boolean) -> Unit,
     onKrSkipStartupDialogs: (Boolean) -> Unit,
@@ -882,6 +885,7 @@ private fun LazyListPlaceholder(
     onRpgLegacyRenderer: (Boolean) -> Unit, onRpgMvVersion: (String) -> Unit, onRpgMzVersion: (String) -> Unit,
     onRpg: (EngineSettingsStore.RpgMaker) -> Unit,
     onRenpyVersion: (String) -> Unit,
+    onRenpy: (EngineSettingsStore.RenPy) -> Unit,
 ) {
     val krSelectMap = krSelectOptions()
     val krKernelMap = krKernelOptions()
@@ -1054,6 +1058,10 @@ private fun LazyListPlaceholder(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             }
+        }
+
+        if (kind == EngineSettingsKind.RENPY) item {
+            RenPySettingsCard(settings = renpy, onSettings = onRenpy)
         }
 
         item { BottomInsetSpacer() }

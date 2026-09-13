@@ -84,6 +84,17 @@ object PerGameSettingsStore {
     // Ren'Py（外置模块版本选择）
     const val F_RENPY_VERSION = "renpy_engine_version"
 
+    // Ren'Py 外置模块配置（settings extra 的 renpy 节 + app.cheats，null=跟随全局）
+    const val F_RENPY_CHEATS = "renpy_cheats"
+    const val F_RENPY_HW_VIDEO = "renpy_hw_video"
+    const val F_RENPY_AUTOSAVE = "renpy_autosave"
+    const val F_RENPY_PHONE_SMALL_VARIANT = "renpy_phonesmallvariant"
+    const val F_RENPY_VSYNC = "renpy_vsync"
+    const val F_RENPY_LESS_MEMORY = "renpy_less_memory"
+    const val F_RENPY_LESS_UPDATES = "renpy_less_updates"
+    const val F_RENPY_DONT_USE_GL2 = "renpy_dont_use_gl2"
+    const val F_RENPY_RECOMPILE = "renpy_recompile"
+
     // ONS 子对象键
     const val ONS_KEY = "ons"
 
@@ -188,6 +199,27 @@ object PerGameSettingsStore {
             fontScale = strOrNull(F_RPG_FONT_SCALE),
         )
         return override.takeIf { it != RpgMakerOverride() }
+    }
+
+    /**
+     * Ren'Py 外置模块覆盖快照 → 类型化模型（缺失字段=跟随全局，
+     * 供 [EffectiveEngineSettings.mergeRenPy] 使用）。版本键不在此列。
+     */
+    fun toRenPyOverride(json: JSONObject?): RenPyOverride? {
+        if (json == null) return null
+        fun boolOrNull(key: String): Boolean? = if (json.has(key)) json.optBoolean(key) else null
+        val override = RenPyOverride(
+            cheats = boolOrNull(F_RENPY_CHEATS),
+            hwVideo = boolOrNull(F_RENPY_HW_VIDEO),
+            autosave = boolOrNull(F_RENPY_AUTOSAVE),
+            phoneSmallVariant = boolOrNull(F_RENPY_PHONE_SMALL_VARIANT),
+            vsync = boolOrNull(F_RENPY_VSYNC),
+            lessMemory = boolOrNull(F_RENPY_LESS_MEMORY),
+            lessUpdates = boolOrNull(F_RENPY_LESS_UPDATES),
+            dontUseGl2 = boolOrNull(F_RENPY_DONT_USE_GL2),
+            recompile = boolOrNull(F_RENPY_RECOMPILE),
+        )
+        return override.takeIf { it != RenPyOverride() }
     }
 
     /** 清除某游戏全部覆盖，回退到全局默认。 */
