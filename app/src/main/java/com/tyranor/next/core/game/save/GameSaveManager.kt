@@ -540,6 +540,10 @@ class GameSaveManager(private val context: Context) {
          * 下钻（上限 [MAX_UNWRAP_DEPTH] 层）；含散文件或多个条目时视为已是内容根、原样返回。
          * 下钻后若无可复制内容，由调用方以 `copied == 0` 拦截，不会清空旧存档。
          *
+         * 语义目录绝不剥离：若唯一子目录是 `original/`（转化留底）或 `deleted/`（删除归置），
+         * 停止下钻——否则会进入该目录内部，绕过 excludeFor 对目录名的过滤，把历史留底/
+         * 已归置文件当成活动存档复制，用旧备份覆盖当前存档。
+         *
          * 仅对 RPG Maker MV/MZ 生效：其它引擎的顶层目录（如 `system/`、插件数据目录）可能
          * 带语义，剥离会改变文件结构；非 RPG 引擎原样返回 [extracted]。
          */
@@ -550,11 +554,17 @@ class GameSaveManager(private val context: Context) {
             while (depth < MAX_UNWRAP_DEPTH) {
                 val only = current.listFiles().orEmpty().singleOrNull() ?: return current
                 if (!only.isDirectory) return current
+                if (isSemanticSaveDirName(only.name)) return current
                 current = only
                 depth++
             }
             return current
         }
+
+        /** 存档目录内的语义子目录名（互通留底/删除归置），导入剥壳时不得穿越。 */
+        private fun isSemanticSaveDirName(name: String): Boolean =
+            name.equals(RpgSaveFormat.ORIGINAL_DIR, ignoreCase = true) ||
+                name.equals(RpgSaveSync.DELETED_DIR, ignoreCase = true)
 
         private const val MAX_UNWRAP_DEPTH = 3
     }

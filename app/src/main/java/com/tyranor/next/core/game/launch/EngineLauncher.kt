@@ -60,7 +60,9 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.charset.Charset
+import java.util.Collections
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 游戏引擎启动器：根据 [EngineType] 把扫描到的游戏目录交给对应引擎宿主 Activity。
@@ -109,7 +111,25 @@ object EngineLauncher {
     suspend fun launch(context: Context, game: ScanGame, patchChoice: ArtemisPatchChoice? = null): LaunchResult =
         withContext(Dispatchers.IO) { launchInternal(context, game, patchChoice) }
 
+    /**
+     * 正在执行启动流程的 game.uri 集合（覆盖启动前同步到 startActivity 的全过程）。
+     * 单飞协调：前台回写在同步前检查此集合——「会话已退出但同一游戏正被拉起」的窗口内
+     * 引擎即将开始写存档，回写此时插入会与引擎写入交错（进程内锁约束不了引擎进程）。
+     * 登记在启动最前、finally 移除，保证启动失败/取消也恢复一致状态。
+     */
+    private val launchingUris: MutableSet<String> =
+        Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+
     private suspend fun launchInternal(context: Context, game: ScanGame, patchChoice: ArtemisPatchChoice?): LaunchResult {
+        launchingUris.add(game.uri)
+        try {
+            return launchInternalChecked(context, game, patchChoice)
+        } finally {
+            launchingUris.remove(game.uri)
+        }
+    }
+
+    private suspend fun launchInternalChecked(context: Context, game: ScanGame, patchChoice: ArtemisPatchChoice?): LaunchResult {
         val path = resolveGameDirectory(context, game)
         // 三级设置（应用级 + 单游戏覆盖）一次性解析，后续 Intent 组装只消费生效值（P0-3）
         val settings = EngineSettingsResolver.resolve(context, game, path)
@@ -325,10 +345,12 @@ object EngineLauncher {
         )
     }
 
-    /** 记录待回写的游戏（应用回到前台时对已退出会话补一次同步）。 */
+    /** 记录待回写的游戏（应用回到前台时对已退出会话补一次同步）；写入失败如实记日志。 */
     fun recordPendingSaveSync(context: Context, gameUri: String) {
         if (gameUri.isBlank()) return
-        RpgSavePendingStore.add(context, gameUri)
+        if (!RpgSavePendingStore.add(context, gameUri)) {
+            Log.w(TAG, "record pending save sync failed uri=$gameUri")
+        }
     }
 
     /**
@@ -387,6 +409,12 @@ object EngineLauncher {
                 attempts++
             }
             if (isEngineSessionRunning(context, game, gameDirPath)) return@forEach
+            // 该游戏的启动流程正在进行（启动自身会先做一次同步）：回写推迟到下一次前台，
+            // 避免与即将拉起的引擎写入交错。保留 pending，由启动流程的同步覆盖本次。
+            if (launchingUris.contains(gameUri)) {
+                Log.i(TAG, "rpg save interop flush deferred (launching) uri=$gameUri")
+                return@forEach
+            }
             try {
                 syncRpgSavesForDirectory(context, gameUri, gameDir, game.engine)
                 synced++

@@ -80,4 +80,39 @@ class GameSaveImportUnwrapTest {
         val root = GameSaveManager.unwrapOuterDirs(extracted, EngineType.ARTEMIS)
         assertEquals(extracted.absolutePath, root.absolutePath)
     }
+
+    @Test
+    fun doesNotUnwrapOriginalDirWrapper() {
+        // 导入包仅含 original/（转化留底目录）时绝不下钻：下钻会绕过 excludeFor 对
+        // 目录名的过滤，把历史留底当活动存档复制，用旧备份覆盖当前存档
+        val extracted = temporaryFolder.newFolder("extracted")
+        val original = extracted.resolve("original").apply { mkdirs() }
+        original.resolve("global.rpgsave").writeText("STALE")
+
+        val root = GameSaveManager.unwrapOuterDirs(extracted, EngineType.RPG_MV)
+        assertEquals(extracted.absolutePath, root.absolutePath)
+    }
+
+    @Test
+    fun doesNotUnwrapDeletedDirWrapper() {
+        // 同上：deleted/（删除归置目录）也不得穿越
+        val extracted = temporaryFolder.newFolder("extracted")
+        val deleted = extracted.resolve("deleted").apply { mkdirs() }
+        deleted.resolve("file1.rpgsave").writeText("REMOVED")
+
+        val root = GameSaveManager.unwrapOuterDirs(extracted, EngineType.RPG_MV)
+        assertEquals(extracted.absolutePath, root.absolutePath)
+    }
+
+    @Test
+    fun unwrapsThroughWrapperAroundOriginalDir() {
+        // save/original/ 两层包装：save 是包装目录可下钻，original 是语义目录停下——
+        // 语义目录本身不被剥离，其内容也不会被误当活动存档根
+        val extracted = temporaryFolder.newFolder("extracted")
+        val original = extracted.resolve("save/original").apply { mkdirs() }
+        original.resolve("global.rpgsave").writeText("STALE")
+
+        val root = GameSaveManager.unwrapOuterDirs(extracted, EngineType.RPG_MV)
+        assertEquals(original.parentFile?.absolutePath, root.absolutePath)
+    }
 }

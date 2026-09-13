@@ -98,9 +98,11 @@ object RpgSaveFormatConverter {
                 }
             }
             if (!tmp.renameTo(target)) {
-                // rename 失败（目标被占用等）退回直接复制，保底不丢数据
-                source.copyTo(target, overwrite = false)
-                tmp.delete()
+                // rename 失败（目标被占用等）只能放弃本文件：直接向最终路径复制不是原子操作，
+                // 进程中途被杀会留下半成品目标——外层 catch 此时尚未置 copied，不会清理它，
+                // 下次转化会把残缺目标当作「已存在」跳过并把完整源移入 original/，数据卡死。
+                // 抛错则源文件原样保留在活动目录，下次重试。
+                throw IOException("cannot atomically replace ${target.absolutePath}")
             }
             target.setLastModified(source.lastModified())
         } finally {

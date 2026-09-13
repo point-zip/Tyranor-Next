@@ -15,7 +15,7 @@ import java.security.MessageDigest
  *
  * 判定规则（逐槽位，槽位 = `global`/`config`/`fileN`，MV 备份 `.bak`）：
  * - 两侧都有：修改时间不同则**较新者覆盖较旧者**（复制后把目标 mtime 设为源 mtime，保证下一轮幂等）；
- *   相同则跳过。
+ *   相同则必须内容哈希一致才跳过（mtime 可被外部改写，不能只信时间戳）。
  * - 仅标准侧有：清单显示该槽位曾在 Tyranor 存在 ⇒ 判为「Tyranor 侧已删除」→
  *   把标准文件移入 `<标准侧>/deleted/`；否则视为新 PC 存档 → 导入 Tyranor。
  * - 仅 Tyranor 侧有：清单显示标准侧曾存在 ⇒（外部删除标准档）按既定策略**保留 Tyranor 并重新导出**，
@@ -60,10 +60,10 @@ object RpgSaveSync {
         val changed: Int get() = imported + exported + toTyranor + toStandard + movedToDeleted
     }
 
-    /** 单个槽位同步后的落盘状态（存在标记 + mtime + size），见 [RpgSaveSyncState.SlotState]。 */
+    /** 单个槽位同步后的落盘状态（存在标记 + mtime），见 [RpgSaveSyncState.SlotState]。 */
     private fun slotState(
-        std: File?,
-        tyr: File?,
+        stdFile: File?,
+        tyrFile: File?,
         stdMtime: Long,
         tyrMtime: Long,
         stdExists: Boolean,
@@ -73,8 +73,6 @@ object RpgSaveSync {
         tyranorMtime = tyrMtime,
         standardExists = stdExists,
         tyranorExists = tyrExists,
-        standardSize = if (stdExists) (std?.length() ?: 0L) else 0L,
-        tyranorSize = if (tyrExists) (tyr?.length() ?: 0L) else 0L,
     )
 
     /**
@@ -119,9 +117,18 @@ object RpgSaveSync {
         if (standardDirs.isEmpty()) return Result()
 
         val preferredStandardDir = standardDirs.first()
-        val standardFiles = collectStandard(standardDirs, engine)
+        val (standardFiles, quarantinedDuplicates) = collectStandard(standardDirs, engine)
         val tyranorFiles = collectTyranor(tyranorDir, engine)
-        val previous = stateStore.load(gameKey)
+        // 清单读取失败必须中止本轮同步：清单里的「已删除」记录丢失后，继续同步会把
+        // 已删除的存档当成新存档重新导入。中止 = 不做任何文件改动 + 如实报告失败。
+        val previous: Map<String, RpgSaveSyncState.SlotState> = when (val loaded = stateStore.load(gameKey)) {
+            is RpgSaveSyncState.LoadResult.Loaded -> loaded.slots
+            is RpgSaveSyncState.LoadResult.Missing -> emptyMap()
+            is RpgSaveSyncState.LoadResult.Unreadable -> {
+                // core 层不做日志（保持纯 File 依赖、单测可跑）：失败计数由调用方上报
+                return Result(failed = 1)
+            }
+        }
 
         // 槽位已存在的标准文件所在目录（就地更新），否则用首选目录
         fun standardParentFor(slot: String): File =
@@ -131,7 +138,7 @@ object RpgSaveSync {
         var exported = 0
         var toTyranor = 0
         var toStandard = 0
-        var movedToDeleted = 0
+        var movedToDeleted = quarantinedDuplicates
         var skipped = 0
         var failed = 0
         val nextState = mutableMapOf<String, RpgSaveSyncState.SlotState>()
@@ -159,14 +166,9 @@ object RpgSaveSync {
                         val t = tyr.lastModified()
                         when {
                             s == t -> {
-                                // mtime 相同：先看 (mtime,size) 是否都与上次同步后一致——
-                                // 两侧都未变动才能免去内容哈希（否则每轮都要哈希全部存档）
-                                val metaUnchanged = previous[slot]?.let { prev ->
-                                    prev.standardExists == stdExistsNow && prev.tyranorExists == tyrExistsNow &&
-                                        prev.standardMtime == s && prev.tyranorMtime == t &&
-                                        prev.standardSize == std.length() && prev.tyranorSize == tyr.length()
-                                } == true
-                                if (metaUnchanged || sameContent(std, tyr)) {
+                                // mtime 相同也必须比内容：内容可以在 mtime/长度都不变的情况下被改
+                                // （外部编辑器改写后回设时间戳等）。跳过与否只能以内容哈希为准。
+                                if (sameContent(std, tyr)) {
                                     skipped++
                                 } else {
                                     // 无法判定新旧：以标准侧为准，且**无条件**把 Tyranor 侧留底——
@@ -260,19 +262,45 @@ object RpgSaveSync {
         )
     }
 
-    /** 枚举多个标准侧目录（`save`/`Save`）；同槽位多个文件时优先首选目录（列表靠前者）。 */
-    private fun collectStandard(dirs: List<File>, engine: EngineType): Map<String, File> {
+    /**
+     * 枚举多个标准侧目录（`save`/`Save`）。
+     *
+     * 同一槽位出现在多个目录时不再静默取先者：内容一致视为等价副本（任取其一）；
+     * 内容不一致则把**未选中的副本**隔离进其所在目录的 `deleted/`（保留数据、避免旧副本
+     * 长期分叉），再以首选目录的文件为同步源。返回值第二项为隔离数量（映射到结果里的
+     * movedToDeleted）；隔离失败则保留原位、以首选目录为准继续同步。
+     */
+    private fun collectStandard(dirs: List<File>, engine: EngineType): Pair<Map<String, File>, Int> {
         val out = mutableMapOf<String, File>()
+        var quarantined = 0
         dirs.forEach { dir ->
             if (!dir.isDirectory) return@forEach
             dir.listFiles().orEmpty().forEach { file ->
                 if (!file.isFile) return@forEach
                 val slot = RpgSaveFormat.standardSlot(file.name, engine) ?: return@forEach
-                // 首选目录在前，putIfAbsent 使先出现者胜
-                out.putIfAbsent(slot, file)
+                val existing = out[slot]
+                if (existing == null) {
+                    // 首选目录在前：先出现者胜
+                    out[slot] = file
+                    return@forEach
+                }
+                // 同一文件（大小写不敏感 FS 上 save==Save）不算重复
+                if (samePath(existing, file)) return@forEach
+                if (sameContent(existing, file)) return@forEach
+                // 冲突副本：隔离到 deleted/ 留证，同步以首选目录文件为准
+                if (moveToDeleted(file, file.parentFile ?: dir)) {
+                    quarantined++
+                }
             }
         }
-        return out
+        return out to quarantined
+    }
+
+    /** 路径等价判定：优先 canonicalPath，失败退回大小写不敏感字符串比较。 */
+    private fun samePath(a: File, b: File): Boolean = try {
+        a.canonicalPath == b.canonicalPath
+    } catch (_: Throwable) {
+        a.absolutePath.equals(b.absolutePath, ignoreCase = true)
     }
 
     private fun collectTyranor(dir: File, engine: EngineType): Map<String, File> {

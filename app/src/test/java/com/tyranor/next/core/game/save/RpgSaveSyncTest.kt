@@ -316,8 +316,7 @@ class RpgSaveSyncTest {
         val result = RpgSaveSync.sync(standard, tyranor, EngineType.RPG_MV, store(), "g")
 
         assertEquals(1, result.skipped)
-        assertEquals(0, result.changed)
-    }
+        assertEquals(0, result.changed)    }
 
     @Test
     fun zeroMtimeSlotIsStillTrackedAsPresent() {
@@ -343,5 +342,62 @@ class RpgSaveSyncTest {
         standard.writeAt("global.rpgsave", "X", 1_000)
         val result = RpgSaveSync.sync(standard, tyranor, EngineType.TYRANO, store(), "g")
         assertEquals(0, result.changed)
+    }
+
+    @Test
+    fun conflictingDuplicateSlotAcrossDirsIsQuarantined() {
+        // 同一槽位出现在两个标准侧目录且内容不一致：不得静默丢弃后者——
+        // 未选中的副本须隔离进其所在目录的 deleted/，同步以首选目录为准
+        val lower = temporaryFolder.newFolder("save")
+        val alt = temporaryFolder.newFolder("save_alt")
+        val tyranor = temporaryFolder.newFolder("savedata")
+        lower.writeAt("global.rpgsave", "PREFERRED", 1_000)
+        alt.writeAt("global.rpgsave", "DIVERGED", 2_000)
+
+        val result = RpgSaveSync.sync(listOf(lower, alt), tyranor, EngineType.RPG_MV, store(), "g")
+
+        assertEquals(1, result.movedToDeleted)
+        assertTrue(alt.resolve("deleted/global.rpgsave").isFile)
+        assertEquals("DIVERGED", alt.resolve("deleted/global.rpgsave").readText())
+        assertFalse(alt.resolve("global.rpgsave").exists())
+        assertEquals("PREFERRED", tyranor.resolve("RPG Global.bin").readText())
+    }
+
+    @Test
+    fun duplicateSlotWithSameContentIsNotQuarantined() {
+        // 内容一致的等价副本不算冲突：任取其一，未选中者原样保留
+        val lower = temporaryFolder.newFolder("save")
+        val alt = temporaryFolder.newFolder("save_alt")
+        val tyranor = temporaryFolder.newFolder("savedata")
+        lower.writeAt("global.rpgsave", "SAME", 1_000)
+        alt.writeAt("global.rpgsave", "SAME", 2_000)
+
+        val result = RpgSaveSync.sync(listOf(lower, alt), tyranor, EngineType.RPG_MV, store(), "g")
+
+        assertEquals(0, result.movedToDeleted)
+        assertEquals(1, result.imported)
+        assertTrue(alt.resolve("global.rpgsave").isFile)
+    }
+
+    @Test
+    fun corruptManifestAbortsSyncWithoutImporting() {
+        // 清单损坏不能当成「首次同步」继续：已删除记录丢失后会把已删存档当新存档导入。
+        // 读取失败必须中止本轮同步（不做任何文件改动、如实报失败）。
+        val (standard, tyranor) = dirs()
+        val stateDir = temporaryFolder.newFolder("state")
+        val store = RpgSaveSyncState(stateDir)
+        standard.writeAt("file1.rpgsave", "V1", 1_000)
+        tyranor.writeAt("RPG File1.bin", "V1", 1_000)
+        RpgSaveSync.sync(standard, tyranor, EngineType.RPG_MV, store, "g")
+
+        stateDir.listFiles().orEmpty().forEach { it.writeText("{corrupt") }
+        standard.writeAt("file2.rpgsave", "V2", 2_000)
+
+        val result = RpgSaveSync.sync(standard, tyranor, EngineType.RPG_MV, store, "g")
+
+        assertEquals(1, result.failed)
+        assertEquals(0, result.imported)
+        assertEquals(0, result.changed)
+        assertFalse(tyranor.resolve("RPG File2.bin").exists())
     }
 }

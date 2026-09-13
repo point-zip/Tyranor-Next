@@ -9,28 +9,27 @@ import java.io.File
  * 不能依赖退出回调，故以前台兜底）。
  *
  * 存储为应用私有文件 `filesDir/rpg_save_pending`，每行一个 game uri；
- * 单进程写（主进程 UI 调用），读写均 runCatching 兜底，损坏时视为空集合。
+ * 单进程写（主进程 UI 调用），写入原子替换、失败返回 false 并由调用方上报，
+ * 读取损坏时视为空集合。
  */
 object RpgSavePendingStore {
     private const val FILE_NAME = "rpg_save_pending"
 
     private fun file(context: Context): File = File(context.applicationContext.filesDir, FILE_NAME)
 
+    /** 登记待回写游戏；返回是否已成功落盘（false = 写入失败，本次登记未生效）。 */
     @Synchronized
-    fun add(context: Context, gameUri: String) {
-        runCatching {
-            val current = all(context).toMutableSet()
-            if (current.add(gameUri)) write(context, current)
-        }
-    }
+    fun add(context: Context, gameUri: String): Boolean = runCatching {
+        val current = all(context).toMutableSet()
+        if (current.add(gameUri)) write(context, current) else true
+    }.getOrDefault(false)
 
+    /** 移除待回写游戏；返回是否已成功落盘（false = 写入失败，记录可能仍在）。 */
     @Synchronized
-    fun remove(context: Context, gameUri: String) {
-        runCatching {
-            val current = all(context).toMutableSet()
-            if (current.remove(gameUri)) write(context, current)
-        }
-    }
+    fun remove(context: Context, gameUri: String): Boolean = runCatching {
+        val current = all(context).toMutableSet()
+        if (current.remove(gameUri)) write(context, current) else true
+    }.getOrDefault(false)
 
     fun all(context: Context): List<String> =
         runCatching {
@@ -39,22 +38,29 @@ object RpgSavePendingStore {
             else f.readLines(Charsets.UTF_8).map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         }.getOrDefault(emptyList())
 
-    private fun write(context: Context, uris: Set<String>) {
+    /** 原子写入；返回是否提交成功。失败保留旧文件（不截断重写），由调用方决定如何上报。 */
+    private fun write(context: Context, uris: Set<String>): Boolean {
         val f = file(context)
         if (uris.isEmpty()) {
-            f.delete()
-            return
+            return runCatching { f.delete() && true || !f.exists() }.getOrDefault(false)
         }
         // 原子写：先写同目录临时文件再 rename。直接 writeText 会先截断目标，进程终止或 I/O
         // 失败会留下空/半截文件，而 all() 把损坏结果当空集合——待回写记录会永久丢失。
-        val dir = f.parentFile ?: return
+        val dir = f.parentFile ?: return false
         val tmp = File(dir, f.name + ".tmp." + System.nanoTime())
-        runCatching {
+        return try {
             tmp.writeText(uris.joinToString("\n"), Charsets.UTF_8)
-            if (!tmp.renameTo(f)) {
-                // rename 失败保留旧文件（不截断重写），放弃本次写入；下次 add/remove 会重试
+            val ok = tmp.renameTo(f)
+            if (ok) {
+                true
+            } else {
+                // rename 失败保留旧文件（不截断重写），报告失败；下次 add/remove 会重试
                 tmp.delete()
+                false
             }
-        }.onFailure { tmp.delete() }
+        } catch (_: Throwable) {
+            runCatching { tmp.delete() }
+            false
+        }
     }
 }

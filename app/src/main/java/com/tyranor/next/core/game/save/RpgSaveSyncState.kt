@@ -23,46 +23,58 @@ class RpgSaveSyncState(private val storeDir: File) {
      * [standardExists]/[tyranorExists] 显式记录该侧当时是否存在——不能用 `mtime > 0` 反推：
      * mtime 为 0（时间戳不可用/纪元时间）的文件会被误判为「不存在」，进而把「已删除」当成
      * 「新建」而复写。默认值由 mtime 推导，兼容本次改动前写入的旧清单（缺少这两个字段）。
-     *
-     * [standardSize]/[tyranorSize] 供 mtime 相同时做廉价的「是否自上次同步后都未变动」判定：
-     * 两侧 (mtime,size) 都与清单一致即可免去内容哈希（同步后两侧 mtime 必然相等，否则每轮
-     * 都要哈希全部存档）。任一不符才退到内容哈希。
      */
     data class SlotState(
         val standardMtime: Long,
         val tyranorMtime: Long,
         val standardExists: Boolean = standardMtime > 0L,
         val tyranorExists: Boolean = tyranorMtime > 0L,
-        val standardSize: Long = 0L,
-        val tyranorSize: Long = 0L,
     )
 
-    fun load(gameKey: String): Map<String, SlotState> = synchronized(INTEROP_LOCK) {
+    /** [load] 的结果：区分「清单不存在（首次同步）」与「清单损坏/读取失败（必须中止同步）」。 */
+    sealed interface LoadResult {
+        /** 清单文件不存在：按首次同步处理（空状态）。 */
+        data object Missing : LoadResult
+
+        /** 清单读取并解析成功。 */
+        data class Loaded(val slots: Map<String, SlotState>) : LoadResult
+
+        /**
+         * 清单存在但读取/解析失败。**不能**当作空清单继续同步——清单里记录的「已删除」
+         * 会被当成「新建」，已删除的存档会被重新导入。调用方必须中止本轮同步。
+         */
+        data object Unreadable : LoadResult
+    }
+
+    fun load(gameKey: String): LoadResult = synchronized(INTEROP_LOCK) {
         val file = fileFor(gameKey)
-        if (!file.isFile) return@synchronized emptyMap()
+        if (!file.isFile) return@synchronized LoadResult.Missing
         runCatching {
             val root = JSONObject(file.readText(Charsets.UTF_8))
-            val slots = root.optJSONObject(KEY_SLOTS) ?: return@runCatching emptyMap()
-            buildMap {
-                slots.keys().forEach { slot ->
-                    val entry = slots.optJSONObject(slot) ?: return@forEach
-                    val stdMtime = entry.optLong(KEY_STANDARD, 0L)
-                    val tyrMtime = entry.optLong(KEY_TYRANOR, 0L)
-                    put(
-                        slot,
-                        SlotState(
-                            standardMtime = stdMtime,
-                            tyranorMtime = tyrMtime,
-                            // 旧清单无显式标记：按 mtime>0 推导
-                            standardExists = entry.optBoolean(KEY_STANDARD_EXISTS, stdMtime > 0L),
-                            tyranorExists = entry.optBoolean(KEY_TYRANOR_EXISTS, tyrMtime > 0L),
-                            standardSize = entry.optLong(KEY_STANDARD_SIZE, 0L),
-                            tyranorSize = entry.optLong(KEY_TYRANOR_SIZE, 0L),
-                        ),
-                    )
-                }
-            }
-        }.getOrDefault(emptyMap())
+            val slots = root.optJSONObject(KEY_SLOTS) ?: return@runCatching LoadResult.Loaded(emptyMap())
+            LoadResult.Loaded(
+                buildMap {
+                    slots.keys().forEach { slot ->
+                        val entry = slots.optJSONObject(slot) ?: return@forEach
+                        val stdMtime = entry.optLong(KEY_STANDARD, 0L)
+                        val tyrMtime = entry.optLong(KEY_TYRANOR, 0L)
+                        put(
+                            slot,
+                            SlotState(
+                                standardMtime = stdMtime,
+                                tyranorMtime = tyrMtime,
+                                // 旧清单无显式标记：按 mtime>0 推导
+                                standardExists = entry.optBoolean(KEY_STANDARD_EXISTS, stdMtime > 0L),
+                                tyranorExists = entry.optBoolean(KEY_TYRANOR_EXISTS, tyrMtime > 0L),
+                            ),
+                        )
+                    }
+                },
+            )
+        }.getOrElse {
+            // 半截 JSON/损坏内容：如实上报，绝不能兜底成「首次同步」
+            LoadResult.Unreadable
+        }
     }
 
     /**
@@ -84,9 +96,7 @@ class RpgSaveSyncState(private val storeDir: File) {
                         .put(KEY_STANDARD, state.standardMtime)
                         .put(KEY_TYRANOR, state.tyranorMtime)
                         .put(KEY_STANDARD_EXISTS, state.standardExists)
-                        .put(KEY_TYRANOR_EXISTS, state.tyranorExists)
-                        .put(KEY_STANDARD_SIZE, state.standardSize)
-                        .put(KEY_TYRANOR_SIZE, state.tyranorSize),
+                        .put(KEY_TYRANOR_EXISTS, state.tyranorExists),
                 )
             }
             val root = JSONObject().put(KEY_SLOTS, encoded)
@@ -127,8 +137,6 @@ class RpgSaveSyncState(private val storeDir: File) {
         private const val KEY_TYRANOR = "tyr"
         private const val KEY_STANDARD_EXISTS = "std_x"
         private const val KEY_TYRANOR_EXISTS = "tyr_x"
-        private const val KEY_STANDARD_SIZE = "std_sz"
-        private const val KEY_TYRANOR_SIZE = "tyr_sz"
 
         /** 应用私有目录：`filesDir/rpg_save_sync/`。 */
         fun forContext(context: Context): RpgSaveSyncState =
