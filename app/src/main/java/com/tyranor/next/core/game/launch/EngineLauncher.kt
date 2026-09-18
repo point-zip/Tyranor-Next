@@ -21,12 +21,16 @@ import com.akira.tyranoemu.remote.ArtemisActivityClean
 import com.akira.tyranoemu.remote.Kirikiroid126
 import com.akira.tyranoemu.remote.Kirikiroid134
 import com.akira.tyranoemu.remote.Kirikiroid139
+import com.core.engine.EnginePrefs
 import com.core.engine.EngineSessionRegistry
 import com.core.engine.KrkrStartupDialogPolicy
 import com.core.engine.LaunchContract
+import com.tyranor.next.core.engine.external.EmulatorLaunchStyle
+import com.tyranor.next.core.engine.external.EmulatorTarget as ExternalEmulatorTarget
 import com.core.krkrsdl3.Krkrsdl3Activity
 import com.core.nativeplugin.NativePluginConstants
 import com.core.rpgmaker.RpgMakerActivity
+import com.core.siglus.SiglusActivity
 import com.core.tyrano.TyranoActivity
 import com.tyranor.next.core.engine.EngineType
 import com.tyranor.next.core.engine.external.ExternalEmulatorLauncher
@@ -105,7 +109,12 @@ object EngineLauncher {
         EngineType.VN,
         EngineType.WEB_OTHER,
         EngineType.ARTEMIS,
+        EngineType.SIGLUS,
         EngineType.RENPY,
+        // YURIS / CatSystem2 / PC 由外置 Winlator 承载（GAL 分组），引擎页条目点击进入引擎专属弹窗
+        EngineType.YURIS,
+        EngineType.CATSYSTEM2,
+        EngineType.PC,
         // PSP/Switch 不参与内置/外置 APK 链路，仅用于引擎页「主机系列」展示与外置模拟器跳转
         EngineType.PSP,
         EngineType.NINTENDO_SWITCH,
@@ -141,9 +150,13 @@ object EngineLauncher {
     }
 
     private suspend fun launchInternalChecked(context: Context, game: ScanGame, patchChoice: ArtemisPatchChoice?): LaunchResult {
-        // 外置主机模拟器（PSP / Switch）：ROM 文件型游戏不解析目录、不走内置引擎与外置 APK 模块链路
+        // 外置模拟器跳转：PSP / Switch 为 ROM 文件型（不解析目录），
+        // YURIS 为 Windows 游戏（目录 + 主 exe，经 Winlator 外置启动协议挂载目录）
         ExternalEmulatorRegistry.forEngine(game.engine)?.let { target ->
             currentCoroutineContext().ensureActive()
+            if (target.launchStyle == EmulatorLaunchStyle.WINLATOR_EXTERNAL) {
+                return launchWindowsViaWinlator(context, game, target)
+            }
             val result = ExternalEmulatorLauncher.launch(context, target, game.uri)
             if (result.success) {
                 GameLibraryFacade.recordRecentGame(context, game)
@@ -705,8 +718,15 @@ object EngineLauncher {
 
             EngineType.ARTEMIS -> buildArtemisIntent(context, path, game, patchChoice, settings)
 
+            EngineType.SIGLUS -> buildSiglusIntent(context, path, game, settings)
+
             EngineType.RPGMAKER,
             EngineType.RENPY -> error("${engine.displayName} is handled by external engine launcher")
+
+            // YURIS / CatSystem2 / PC 由外置 Winlator 承载，在 launchInternalChecked 前置分流，不会走到这里
+            EngineType.YURIS,
+            EngineType.CATSYSTEM2,
+            EngineType.PC -> error("${engine.displayName} is handled by ExternalEmulatorLauncher")
 
             // PSP / Switch 由外置模拟器跳转承载，在 launchInternalChecked 前置分流，不会走到这里
             EngineType.PSP,
@@ -732,6 +752,67 @@ object EngineLauncher {
         intent.putExtra(LaunchContract.THEME_COLOR_TEXT, theme.textArgb)
         intent.putExtra(LaunchContract.THEME_COLOR_TEXT_MUTED, theme.mutedArgb)
         return intent
+    }
+
+    /**
+     * Windows 游戏（YU-RIS / 手动添加的 PC）经外置 Winlator 启动：解析游戏目录真实路径 →
+     * 解析主 exe（`launchFile` 优先）→ 交给 Winlator 挂载目录（自动空闲盘符）并按相对文件名启动。
+     * 运行参数由 Winlator 管理，主 App 只负责识别与跳转。
+     */
+    private suspend fun launchWindowsViaWinlator(
+        context: Context,
+        game: ScanGame,
+        target: ExternalEmulatorTarget,
+    ): LaunchResult {
+        val path = resolveGameDirectory(context, game) ?: return LaunchResult.Failure.GameDirUnresolved
+        requestAllFilesAccessIfNeeded(context, game, path)?.let { return it }
+        val exeName = YurisLaunchFiles.resolveExeName(game, path)
+            ?: return LaunchResult.Failure.YurisExeMissing
+        currentCoroutineContext().ensureActive()
+        val result = ExternalEmulatorLauncher.launchWinlator(
+            context = context,
+            target = target,
+            dirPath = path,
+            exeName = exeName,
+            launchId = game.uri,
+        )
+        if (result.success) {
+            GameLibraryFacade.recordRecentGame(context, game)
+            return LaunchResult.Success
+        }
+        return LaunchResult.Failure.ExternalEmulatorFailed(result)
+    }
+
+    /**
+     * Siglus 启动：真实路径 + 语言覆盖 + 标题回写定位哈希。
+     * 存档目录由引擎固定为 `<游戏根>/savedata`（一期不支持独立存档）。
+     */
+    private fun buildSiglusIntent(
+        context: Context,
+        path: String,
+        game: ScanGame,
+        settings: ResolvedEngineSettings,
+    ): Intent = Intent(context, SiglusActivity::class.java).apply {
+        putExtra(LaunchContract.PATH, path)
+        putExtra(LaunchContract.GAME_PATH, path)
+        putExtra(LaunchContract.PROJECT_ROOT, path)
+        putExtra(LaunchContract.GAME_DIR, path)
+        putExtra(LaunchContract.ROOT_URI, game.uri)
+        putExtra(LaunchContract.LAUNCH_TARGET, game.launchTarget)
+        putExtra(LaunchContract.LAUNCH_MODE, LaunchContract.LAUNCH_MODE_SIGLUS)
+        val language = settings.siglusLanguage
+        if (!language.isNullOrBlank() && language != EngineSettingsStore.SIGLUS_LANGUAGE_AUTO) {
+            putExtra(LaunchContract.SIGLUS_LANGUAGE, language)
+        }
+        val pathHash = Integer.toHexString(path.hashCode())
+        putExtra(LaunchContract.SIGLUS_PATH_HASH, pathHash)
+        // 标题回写登记：宿主写 GAMENAME，app 侧导入时需要 uri 与目录名（判断是否用户改过名）
+        context.applicationContext
+            .getSharedPreferences(EnginePrefs.APP_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(EnginePrefs.KEY_SIGLUS_URI_PREFIX + pathHash, game.uri)
+            .putString(EnginePrefs.KEY_SIGLUS_DEFAULT_TITLE_PREFIX + pathHash, File(path).name)
+            .apply()
     }
 
     /**
@@ -1178,6 +1259,35 @@ object EngineLauncher {
         }
     }
 
+    /** 单游戏手动补丁结果（UI 层映射本地化文案）。 */
+    enum class ArtemisManualPatchResult { SUCCESS, FAILED, GAME_DIR_UNRESOLVED, PERMISSION_REQUIRED }
+
+    /** 手动「添加基础补丁」：强制重新解出 system.ini 等启动文件并应用 Android 化改写。 */
+    suspend fun applyArtemisBasePatchManually(context: Context, game: ScanGame): ArtemisManualPatchResult =
+        applyArtemisPatchManually(context, game) { path ->
+            ArtemisPfsUnpacker.applyBasePatch(path, force = true)
+        }
+
+    /** 手动「添加Windows环境补丁」：解出 system.lua/init.lua 并把 game.os 强制为 windows。 */
+    suspend fun applyArtemisWindowsEnvPatchManually(context: Context, game: ScanGame): ArtemisManualPatchResult =
+        applyArtemisPatchManually(context, game) { path ->
+            ArtemisPfsUnpacker.applyWindowsEnvPatch(path)
+        }
+
+    private suspend fun applyArtemisPatchManually(
+        context: Context,
+        game: ScanGame,
+        action: (String) -> Boolean,
+    ): ArtemisManualPatchResult = withContext(Dispatchers.IO) {
+        if (game.engine != EngineType.ARTEMIS) return@withContext ArtemisManualPatchResult.FAILED
+        val path = resolveGameDirectory(context, game)
+            ?: return@withContext ArtemisManualPatchResult.GAME_DIR_UNRESOLVED
+        requestAllFilesAccessIfNeeded(context, game, path)?.let {
+            return@withContext ArtemisManualPatchResult.PERMISSION_REQUIRED
+        }
+        if (action(path)) ArtemisManualPatchResult.SUCCESS else ArtemisManualPatchResult.FAILED
+    }
+
     /**
      * RinneMobile 的 Artemis 启动链路会在启动前补齐部分 PFS 打包游戏所需的基础文件。
      * “启动时询问”策略已由 UI 层弹窗确认（needsArtemisPatchConfirm），到达这里时
@@ -1528,19 +1638,36 @@ object EngineLauncher {
     /**
      * 列出游戏目录内可作为启动入口的文件（xp3 与 exe），供“启动文件”选择弹窗展示。
      */
-    internal fun listKrLaunchFiles(context: Context, game: ScanGame): List<String> {
+    /** 「启动文件」选择器候选：KRKR 列 .xp3 + .exe；YURIS 列根目录 .exe（干扰项已过滤并排序）。 */
+    internal fun listLaunchFiles(context: Context, game: ScanGame): List<String> {
         val path = resolveGameDirectory(context, game) ?: return emptyList()
-        val files = java.io.File(path).listFiles()?.filter { it.isFile }.orEmpty()
-        val xp3 = files.filter { it.name.lowercase().endsWith(".xp3") }.sortedBy { it.name.lowercase() }.map { it.name }
-        val exe = files.filter { it.name.lowercase().endsWith(".exe") }.sortedBy { it.name.lowercase() }.map { it.name }
-        return xp3 + exe
+        return when (game.engine) {
+            // YU-RIS / CatSystem2 / 手动添加的 PC 共用 Windows exe 候选（过滤干扰项并按可信度排序）；
+            // CatSystem2 额外接受 .bin（Runtime 可能被改名/改扩展名）并优先 cs2.exe
+            EngineType.YURIS, EngineType.PC -> YurisLaunchFiles.candidates(java.io.File(path)).map { it.name }
+            EngineType.CATSYSTEM2 -> YurisLaunchFiles.candidates(
+                java.io.File(path),
+                allowBin = true,
+                preferCs2Runtime = true,
+            ).map { it.name }
+            else -> {
+                val files = java.io.File(path).listFiles()?.filter { it.isFile }.orEmpty()
+                val xp3 = files.filter { it.name.lowercase().endsWith(".xp3") }.sortedBy { it.name.lowercase() }.map { it.name }
+                val exe = files.filter { it.name.lowercase().endsWith(".exe") }.sortedBy { it.name.lowercase() }.map { it.name }
+                xp3 + exe
+            }
+        }
     }
 
     /**
-     * 当前 KRKR 启动入口对应的文件名（仅当入口为目录内文件时返回；入口为目录本身时返回 null）。
+     * 当前启动入口对应的文件名（仅当入口为目录内文件时返回；入口为目录本身时返回 null）。
+     * KRKR 走入口探测；YURIS 为自动/手动解析出的主 exe。
      */
-    internal fun currentKrLaunchFileName(context: Context, game: ScanGame): String? {
+    internal fun currentLaunchFileName(context: Context, game: ScanGame): String? {
         val path = resolveGameDirectory(context, game) ?: return null
+        if (game.engine == EngineType.YURIS || game.engine == EngineType.PC || game.engine == EngineType.CATSYSTEM2) {
+            return YurisLaunchFiles.resolveExeName(game, path)
+        }
         val entry = pickKrActivateEntry(path, game)
         return java.io.File(entry).takeIf { it.isFile }?.name
     }

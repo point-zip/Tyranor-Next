@@ -39,6 +39,13 @@ object EngineScanner {
     private val PFS_PATCH_NAME_RE = Regex("""^[^.]+\.pfs\.\d{3}$""")
     private val OBB_NAME_RE = Regex("""^(main|patch)\.\d+\..+\.obb$""")
 
+    /** YU-RIS 引擎 DLL（YSPNG/YSWBP/YSZLB/YSSNP/YSTCH 等，至少两个才作为弱特征）。 */
+    private val YS_DLL_NAME_RE = Regex("""^ys[a-z0-9]*\.dll$""")
+
+    /** Siglus Gameexe（含本地化变体，与引擎 GAMEEXE_CANDIDATES 对齐）。 */
+    private val GAMEEXE_DAT_RE = Regex("""^gameexe(en|zh|zhtw|de|es|fr|id)?\.dat$""")
+    private val GAMEEXE_INI_RE = Regex("""^gameexe(en|zh|zhtw|de|es|fr|id)?\.ini$""")
+
     // ============ 扫描游戏 ============
 
     /** 全量扫描所有根目录（结果以本次扫描为准，用于首次/无数据场景）。 */
@@ -76,7 +83,7 @@ object EngineScanner {
         }
         val refreshed = GameLibraryFacade.updateGames(context) { currentGames ->
             val existingByUri = currentGames.associateBy { it.uri }
-            activeScanned.map { current ->
+            val scanned = activeScanned.map { current ->
                 existingByUri[current.uri]?.let { previous ->
                     current.copy(
                         coverUri = previous.coverUri ?: current.coverUri,
@@ -92,6 +99,7 @@ object EngineScanner {
                     )
                 } ?: current
             }
+            mergeScannedWithManual(currentGames, scanned)
         }
         val validUris = refreshed.mapTo(HashSet()) { it.uri }
         // 最近打开/快捷启动为 games 派生视图，消失的游戏行已随差量删除，这里同步内存缓存即可。
@@ -104,6 +112,16 @@ object EngineScanner {
         // 扫描识别结果入缓存（迁移方案阶段 5）：Ren'Py 版本建议与 RPGM 子运行时。
         GameLibraryRepository.post(context) { EngineDetectionRepository.recordScanDetections(it, refreshed) }
         refreshed
+    }
+
+    /**
+     * 重扫合并：手动添加的 PC 游戏不参与扫描（不依赖扫描根），重扫时必须原样保留；
+     * 同 uri 若被扫描命中则以扫描结果为准（避免重复条目）。
+     */
+    internal fun mergeScannedWithManual(current: List<ScanGame>, scanned: List<ScanGame>): List<ScanGame> {
+        val scannedUris = scanned.mapTo(HashSet()) { it.uri }
+        val manual = current.filter { it.engine == EngineType.PC && it.uri !in scannedUris }
+        return manual + scanned
     }
 
     /**
@@ -372,6 +390,37 @@ object EngineScanner {
         }
     }
 
+    /**
+     * CatSystem2 目录评分（对齐 `docs/cs2参考.md` §15 的权重，PE 项因扫描链仅有文件名而省略）。
+     * `cs2.exe` 只作为辅助加分：Runtime 常被改名，不能作为唯一判定依据。
+     */
+    private fun cs2Score(
+        hasStartupXml: Boolean,
+        intCount: Int,
+        typicalIntCount: Int,
+        hasCst: Boolean,
+        hasHg3: Boolean,
+        hasCstl: Boolean,
+        hasFes: Boolean,
+        hasAnm: Boolean,
+        hasKcs: Boolean,
+        hasCs2Exe: Boolean,
+    ): Int {
+        var score = 0
+        if (hasStartupXml) score += 15
+        if (intCount >= 2) score += 25 else if (intCount == 1) score += 10
+        // §11：典型 INT 文件名（scene/image/config/bgm/se/kcs）出现多个时明显提高可信度
+        if (typicalIntCount >= 3) score += 20 else if (typicalIntCount >= 1) score += 10
+        if (hasCst) score += 15
+        if (hasHg3) score += 10
+        if (hasCstl) score += 5
+        if (hasFes) score += 5
+        if (hasAnm) score += 5
+        if (hasKcs) score += 10
+        if (hasCs2Exe) score += 10
+        return score
+    }
+
     private fun romTitle(name: String): String =
         name.substringBeforeLast('.').takeIf { it.isNotBlank() } ?: name
 
@@ -607,6 +656,25 @@ object EngineScanner {
         var hasPatchPfs = false
         var hasAnyPfs = false
         var hasObbLikeFile = false
+        var hasGameexeDat = false
+        var hasGameexeIni = false
+        var hasYscfgDat = false
+        var hasYpf = false
+        var hasYmv = false
+        var ysDllCount = 0
+        var hasStartupXml = false
+        var hasCs2Exe = false
+        var intCount = 0
+        var typicalIntCount = 0
+        var hasCst = false
+        var hasCstl = false
+        var hasHg3 = false
+        var hasFes = false
+        var hasAnm = false
+        var hasKcs = false
+        var hasScenePck = false
+        var hasSelectIni = false
+        var hasG00 = false
         var hasOnsScript = false
         var hasOnsArchive = false
         var hasRenpyDir = false
@@ -634,6 +702,21 @@ object EngineScanner {
                 if (lower == "renpy") hasRenpyDir = true
                 if (lower == "game") hasGameDir = true
                 if (lower == "app.asar" || childRel.endsWith("/app.asar")) hasAppAsar = true
+                if (lower == "config") {
+                    // CatSystem2：config/startup.xml 是高价值目录特征（不递归，只看该文件名）
+                    childrenOf(entry).forEach { child ->
+                        if (nameOf(child).equals("startup.xml", ignoreCase = true)) hasStartupXml = true
+                    }
+                }
+                if (lower == "pac") {
+                    // YU-RIS 封包目录：只为 YURIS 特征扫描（.ypf/.ymv），不进入通用目录白名单，
+                    // 避免把包内文件暴露给其它引擎的检测规则
+                    childrenOf(entry).forEach { child ->
+                        val childName = nameOf(child).lowercase(Locale.ROOT)
+                        if (childName.endsWith(".ypf")) hasYpf = true
+                        if (childName.endsWith(".ymv")) hasYmv = true
+                    }
+                }
                 if (lower in ENGINE_SEARCH_DIRECTORIES) {
                     childrenOf(entry).forEach { collect(it, childRel) }
                 }
@@ -655,6 +738,26 @@ object EngineScanner {
                 lower == "root.pfs" || PFS_PATCH_NAME_RE.matches(lower) -> hasPatchPfs = hasPatchPfs || lower != "root.pfs"
                 lower.endsWith(".pfs") || PFS_PATCH_NAME_RE.matches(lower) -> hasAnyPfs = true
                 lower.endsWith(".obb") || OBB_NAME_RE.matches(lower) -> hasObbLikeFile = true
+                GAMEEXE_DAT_RE.matches(lower) -> hasGameexeDat = true
+                GAMEEXE_INI_RE.matches(lower) -> hasGameexeIni = true
+                lower == "scene.pck" -> hasScenePck = true
+                lower == "select.ini" -> hasSelectIni = true
+                lower.endsWith(".g00") -> hasG00 = true
+                lower == "yscfg.dat" -> hasYscfgDat = true
+                lower == "cs2.exe" -> hasCs2Exe = true
+                lower.endsWith(".int") -> {
+                    intCount++
+                    if (lower in CS2_TYPICAL_INT_NAMES) typicalIntCount++
+                }
+                lower.endsWith(".cst") -> hasCst = true
+                lower.endsWith(".cstl") -> hasCstl = true
+                lower.endsWith(".hg3") -> hasHg3 = true
+                lower.endsWith(".fes") -> hasFes = true
+                lower.endsWith(".anm") -> hasAnm = true
+                lower.endsWith(".kcs") -> hasKcs = true
+                lower.endsWith(".ypf") -> hasYpf = true
+                lower.endsWith(".ymv") -> hasYmv = true
+                YS_DLL_NAME_RE.matches(lower) -> ysDllCount++
                 lower == "0.txt" || lower == "00.txt" || lower == "nscript.dat" ||
                     lower == "onscript.nt2" || lower == "onscript.nt3" -> hasOnsScript = true
                 lower.endsWith(".nsa") || lower.endsWith(".sar") -> hasOnsArchive = true
@@ -682,6 +785,51 @@ object EngineScanner {
         }
         children.forEach { collect(it, "") }
 
+        if (hasGameexeDat && hasScenePck) {
+            return Detection(EngineType.SIGLUS, 96, LAUNCH_TARGET_GAME_DIR)
+        }
+        if (hasGameexeIni && hasScenePck) {
+            return Detection(EngineType.SIGLUS, 95, LAUNCH_TARGET_GAME_DIR)
+        }
+        if (hasGameexeDat || hasGameexeIni) {
+            return Detection(EngineType.SIGLUS, 85, LAUNCH_TARGET_GAME_DIR)
+        }
+        if (hasScenePck && hasSelectIni && hasG00) {
+            return Detection(EngineType.SIGLUS, 80, LAUNCH_TARGET_GAME_DIR)
+        }
+        if (hasYscfgDat && hasYpf) {
+            return Detection(EngineType.YURIS, 96, LAUNCH_TARGET_GAME_DIR)
+        }
+        if (hasYpf) {
+            return Detection(EngineType.YURIS, 90, LAUNCH_TARGET_GAME_DIR)
+        }
+        if (hasYscfgDat) {
+            return Detection(EngineType.YURIS, 85, LAUNCH_TARGET_GAME_DIR)
+        }
+        if (ysDllCount >= 2) {
+            return Detection(EngineType.YURIS, 80, LAUNCH_TARGET_GAME_DIR)
+        }
+        if (hasYmv) {
+            return Detection(EngineType.YURIS, 75, LAUNCH_TARGET_GAME_DIR)
+        }
+
+        // CatSystem2（docs/cs2参考.md）：文件名层面的评分识别。
+        // Runtime exe 常被改名（cs2.exe 仅作辅助），PE 版本信息检测不适用于仅名称可得的扫描链。
+        val cs2Score = cs2Score(
+            hasStartupXml = hasStartupXml,
+            intCount = intCount,
+            typicalIntCount = typicalIntCount,
+            hasCst = hasCst,
+            hasHg3 = hasHg3,
+            hasCstl = hasCstl,
+            hasFes = hasFes,
+            hasAnm = hasAnm,
+            hasKcs = hasKcs,
+            hasCs2Exe = hasCs2Exe,
+        )
+        if (cs2Score >= CS2_MIN_SCORE) {
+            return Detection(EngineType.CATSYSTEM2, cs2Score, LAUNCH_TARGET_GAME_DIR)
+        }
         if ((hasSystemIni && hasFirstIet) || hasRootPfs || hasPatchPfs || hasAnyPfs || (hasBootIni && hasObbLikeFile)) {
             return Detection(
                 EngineType.ARTEMIS,
@@ -748,6 +896,14 @@ object EngineScanner {
     }
 
     const val LAUNCH_TARGET_GAME_DIR = "DIR"
+
+    /** CatSystem2 判定阈值（§15 评分：`startup.xml + 多个 .int`（含典型名）即可达标）。 */
+    private const val CS2_MIN_SCORE = 50
+
+    /** §11 典型 INT 文件名。 */
+    private val CS2_TYPICAL_INT_NAMES = setOf(
+        "scene.int", "image.int", "config.int", "bgm.int", "se.int", "kcs.int",
+    )
 
     private val UNKNOWN_DETECTION = Detection(EngineType.UNKNOWN, 0, "")
 

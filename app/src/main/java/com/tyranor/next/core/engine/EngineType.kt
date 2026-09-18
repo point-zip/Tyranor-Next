@@ -11,7 +11,11 @@ enum class EngineType(val displayName: String) {
     VN("VN"),
     WEB_OTHER("WebOther"),
     ARTEMIS("Artemis"),
+    SIGLUS("Siglus"),
     RENPY("Ren'Py"),
+    YURIS("YU-RIS"),
+    CATSYSTEM2("CatSystem2"),
+    PC("PC"),
     PSP("PSP"),
     NINTENDO_SWITCH("Nintendo Switch"),
     UNKNOWN("Unknown");
