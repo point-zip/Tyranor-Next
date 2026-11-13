@@ -250,6 +250,45 @@ StorageManager.cleanWebStorageBackup = function(savefileId) {
     var bak = this.webStorageKey(savefileId) + "bak";
     try { window.saveDataManager.Remove(bak); } catch (e) { try { localStorage.removeItem(bak); } catch (e2) {} }
 };
+// 存档身份判定（仅 v1/v2；v0 走 __rpg__.js，行为保持不变）。
+//
+// MV 内置 DataManager.isThisGameFile 在非本地模式下要求存档的 info.title 等于
+// $dataSystem.gameTitle，不符就判定「不是本作存档」：标题页「继续游戏」不可用，
+// DataManager.loadGame() 返回 false 且不抛异常。这条校验是为浏览器同源共用
+// localStorage 设计的；Tyranor 的存档目录本来就按游戏隔离（默认 <游戏根>/savedata，
+// 开启独立存档目录后 external/save/tyrano/<safeSaveName>），title 只是展示字段。
+// BB_CustomSaveWindow 一类插件会复用标准 title 写章节名（如「第2章『欢乐街与夜之王
+// (前篇)』」），于是本作存档被判成他人的。全局存档列表走 loadSavefileInfo，不校验
+// title，所以表现为「修改器/存档管理看得到槽位，却读不进去」。
+//
+// 兼容策略：本地模式（NW.js 同款，目录单游戏独占）保持原实现；Web 存档模式只认
+// globalId。不额外记录私有 title 字段做比对——游戏更新改掉 gameTitle 时会反过来让
+// 新老存档互判失效，而目录已经隔离，私有字段换不来任何真实判别力。
+//
+// 这里**覆盖**而不是「只在原实现返回 false 时兜底」：目录按游戏隔离是平台事实，不是
+// 单游戏偏好；本 hook 已整体接管 StorageManager 的存档读写，插件在这个判定上再叠一层
+// 也只会作用在同一套存储之上。也不嗅探原实现源码来决定是否生效——核心脚本可能被压缩
+// 或改名，嗅探失效会静默让修复不生效。
+(function () {
+    if (typeof DataManager === "undefined" || typeof StorageManager === "undefined") {
+        // late hook 插在游戏 core 之后，正常不会走到这里；走到了说明游戏把 rpg_managers.js
+        // 放在 </body> 之后，此时不静默改变行为，只留一条可诊断的日志。
+        console.warn("[rpg-save] DataManager/StorageManager 未就绪，跳过存档身份兼容");
+        return;
+    }
+    if (DataManager.__tyranorSaveIdentityPatched) return;
+    var original = DataManager.isThisGameFile;
+    if (typeof original !== "function") return;
+    DataManager.isThisGameFile = function (savefileId) {
+        if (StorageManager.isLocalMode()) return original.call(this, savefileId);
+        var globalInfo = this.loadGlobalInfo();
+        var slot = globalInfo && globalInfo[savefileId];
+        if (!slot || typeof slot !== "object") return false;
+        return slot.globalId === this._globalId;
+    };
+    DataManager.__tyranorSaveIdentityPatched = true;
+})();
+
 // MV 1.6.1 核心自身不调用此函数（渲染器由 autoDetectRenderer 决定），但插件可能读取；
 // 返回与 _createRenderer 实际选择一致的结果（legacy 开关 = Canvas）
 SceneManager.shouldUseCanvasRenderer = function() { return window.__tyranorUseLegacyCanvas === true; };
