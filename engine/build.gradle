@@ -72,12 +72,12 @@ dependencies {
 }
 
 /**
- * RPG Maker MV 兼容层的 JS 检查，全部用 Node 仿真 WebView，接入 check 生命周期，
- * 避免随代码演进而静默失效。通过 -PskipJsHarness 可跳过（例如本机无 Node 的纯
- * Android 构建环境）。
+ * Web 兼容层的 JS 检查，全部用 Node 仿真 WebView，接入 check 生命周期，避免随代码
+ * 演进而静默失效。通过 -PskipJsHarness 可跳过（例如本机无 Node 的纯 Android 构建环境）。
  *
  * - `v2-fs-bridge.harness.js`：跑真实注入链路（基础层 + v2 层 + 桥仿真），覆盖
- *   fs/crypto/zlib/Buffer/localStorage 等行为并与 Node 真值逐项对照。
+ *   fs/crypto/zlib/Buffer/localStorage 等行为并与 Node 真值逐项对照。它测的是 v1/v2
+ *   （含 MZ v2）共用的 NW.js/fs 桥，动作名沿用历史的 `jsHarness`。
  * - `rpg-save-identity.harness.js`：加载仓库真实打包的 MV core 与 `__rpg_v12.js`，
  *   回归「插件改写 info.title 后存档被判成他作」的读档失效。
  */

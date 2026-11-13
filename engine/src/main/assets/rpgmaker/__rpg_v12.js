@@ -250,40 +250,47 @@ StorageManager.cleanWebStorageBackup = function(savefileId) {
     var bak = this.webStorageKey(savefileId) + "bak";
     try { window.saveDataManager.Remove(bak); } catch (e) { try { localStorage.removeItem(bak); } catch (e2) {} }
 };
-// 存档身份判定（仅 v1/v2；v0 走 __rpg__.js，行为保持不变）。
+// 存档身份判定（仅 MV v1/v2；v0 走 __rpg__.js、MZ 走 __rmmz__.js，两者均不受影响）。
 //
 // MV 内置 DataManager.isThisGameFile 在非本地模式下要求存档的 info.title 等于
-// $dataSystem.gameTitle，不符就判定「不是本作存档」：标题页「继续游戏」不可用，
-// DataManager.loadGame() 返回 false 且不抛异常。这条校验是为浏览器同源共用
-// localStorage 设计的；Tyranor 的存档目录本来就按游戏隔离（默认 <游戏根>/savedata，
-// 开启独立存档目录后 external/save/tyrano/<safeSaveName>），title 只是展示字段。
-// BB_CustomSaveWindow 一类插件会复用标准 title 写章节名（如「第2章『欢乐街与夜之王
-// (前篇)』」），于是本作存档被判成他人的。全局存档列表走 loadSavefileInfo，不校验
-// title，所以表现为「修改器/存档管理看得到槽位，却读不进去」。
+// $dataSystem.gameTitle，不符就判定「不是本作存档」：标题页的「继续游戏」随之不可用
+// （打包核心经 isAnySavefileExists 汇总），DataManager.loadGame() 返回 false 且不抛
+// 异常。这条校验是为浏览器同源共用 localStorage 设计的。Tyranor 里 title 只是展示
+// 字段：存档目录由游戏目录名唯一标识（独立存档默认开启，见 EngineSettingsStore；
+// 关闭时回退 <游戏根>/savedata）。BB_CustomSaveWindow 一类插件会把 title 改写成章节名
+// （如「第2章『欢乐街与夜之王(前篇)』」），于是本作存档被判成他人的。全局存档列表走
+// loadGlobalInfo（打包核心的 loadSavefileInfo 也只校验字段类型），都不比较 title 的值，
+// 所以表现为「修改器/存档管理看得到槽位，却读不进去」。
 //
-// 兼容策略：本地模式（NW.js 同款，目录单游戏独占）保持原实现；Web 存档模式只认
-// globalId。不额外记录私有 title 字段做比对——游戏更新改掉 gameTitle 时会反过来让
-// 新老存档互判失效，而目录已经隔离，私有字段换不来任何真实判别力。
+// 兼容策略：本地模式（NW.js 同款）保持原实现；Web 存档模式只比 globalId 的值，但保留
+// 原实现要求的字段类型前置（globalId/title 非字符串的槽位仍判否），免得把半截槽位
+// 当成本作存档。不额外记录私有 title 字段做比对：游戏更新改掉 gameTitle 时那会让新老
+// 存档互判失效；而同一存档目录被两个同名游戏目录共用时（目录标识只取 basename），
+// title 也从来不是可靠护栏。
 //
-// 这里**覆盖**而不是「只在原实现返回 false 时兜底」：目录按游戏隔离是平台事实，不是
-// 单游戏偏好；本 hook 已整体接管 StorageManager 的存档读写，插件在这个判定上再叠一层
-// 也只会作用在同一套存储之上。也不嗅探原实现源码来决定是否生效——核心脚本可能被压缩
-// 或改名，嗅探失效会静默让修复不生效。
+// 采用**覆盖**而不是「只在原实现返回 false 时兜底」：目录标识是平台事实，不是单游戏
+// 偏好。注意插件通常在 main.js 里晚于本 hook 装载，真正会被本补丁盖住的只有 index.html
+// 里直接引入的插件，反之插件可覆盖本补丁。也不嗅探原实现源码来决定是否生效——核心
+// 脚本可能被压缩或改名，嗅探失效会静默让修复不起作用。
 (function () {
     if (typeof DataManager === "undefined" || typeof StorageManager === "undefined") {
-        // late hook 插在游戏 core 之后，正常不会走到这里；走到了说明游戏把 rpg_managers.js
-        // 放在 </body> 之后，此时不静默改变行为，只留一条可诊断的日志。
+        // late hook 插在游戏 core 之后，正常不会走到这里；走到了说明本轮没按预期加载
+        // 到核心（拆包/加载失败），此时不静默改变行为，只留一条可诊断的日志。
         console.warn("[rpg-save] DataManager/StorageManager 未就绪，跳过存档身份兼容");
         return;
     }
     if (DataManager.__tyranorSaveIdentityPatched) return;
     var original = DataManager.isThisGameFile;
-    if (typeof original !== "function") return;
+    if (typeof original !== "function") {
+        console.warn("[rpg-save] DataManager.isThisGameFile 缺失，跳过存档身份兼容");
+        return;
+    }
     DataManager.isThisGameFile = function (savefileId) {
         if (StorageManager.isLocalMode()) return original.call(this, savefileId);
         var globalInfo = this.loadGlobalInfo();
         var slot = globalInfo && globalInfo[savefileId];
         if (!slot || typeof slot !== "object") return false;
+        if (typeof slot.globalId !== "string" || typeof slot.title !== "string") return false;
         return slot.globalId === this._globalId;
     };
     DataManager.__tyranorSaveIdentityPatched = true;

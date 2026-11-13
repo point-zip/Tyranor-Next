@@ -96,12 +96,15 @@ jobs:
       - name: Check bundled SystemNNN runtime
         run: python3 tools/check-systemnnn-runtime.py
 
-      # 单元测试：输入内核（键位/配置/迁移/RTP 语义）等回归全靠它，此前 CI 只构建不测试
+      # 单元测试：输入内核（键位/配置/迁移/RTP 语义）等回归全靠它，此前 CI 只构建不测试。
       - name: Check KRKR mirror stdio semantics
         run: python3 tools/test_krkr_mirror_stdio.py
 
-      - name: Run unit tests
-        run: ./gradlew testDebugUnitTest --no-daemon
+      # JS 兼容层回归（jsHarness / jsSaveIdentityHarness）也挂在 :engine:check 上，
+      # 而 CI 跑的是 testDebugUnitTest，所以在这里一并列出——同一次 Gradle 调用，
+      # 省掉重复的 buildSrc 与配置阶段。
+      - name: Run unit tests and web compatibility JS harnesses
+        run: ./gradlew testDebugUnitTest :engine:jsHarness :engine:jsSaveIdentityHarness --no-daemon
 
       - name: Check lint on PR changes
         if: github.event_name == 'pull_request'

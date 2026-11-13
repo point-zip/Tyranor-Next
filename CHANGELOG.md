@@ -4,7 +4,7 @@
 
 ### 修复
 
-- 修复 RPG Maker MV 会话（TynMV-0.1 / TynMV-0.2）中，把 `info.title` 复用作章节名的插件（如 `BB_CustomSaveWindow`）导致合法存档被判成「不是本作」的问题：`DataManager.loadGame()` 可以正常读档，标题页「继续游戏」在依赖该判定时不再变灰。`DataManager.isThisGameFile` 在 Web 存档模式改为只校验 `globalId`；本地模式保持原实现。已存在的存档无需转化。Tyranor-2.3.4（v0）行为不变。
+- 修复 RPG Maker MV 会话（TynMV-0.1 / TynMV-0.2）中，把 `info.title` 复用作章节名的插件（如 `BB_CustomSaveWindow`）导致合法存档被判成「不是本作」的问题：`DataManager.loadGame()` 可以正常读档，标题页「继续游戏」在依赖该判定时不再变灰。`DataManager.isThisGameFile` 在 Web 存档模式改为只比 `globalId`（保留原实现的字段类型前置），本地模式保持原实现；已存在的存档无需转化。Tyranor-2.3.4（v0）与 MZ 会话沿用原判定，本次未修复。
 - 统一输入框获得焦点时只对前导图标播放回弹，避免文本区域缩放使粉色水滴光标柄反复闪现；保留点击定位、长按选词和拖动选择柄。
 - 修复抽屉上再开弹窗时抽屉面板未被遮罩的问题：单独补足父面板的遮罩，底层页面不重复加深；上层接受关闭时立即恢复抽屉亮度，页面遮罩继续保持。
 

@@ -721,6 +721,7 @@ Room schema 变更须提交 `app/schemas/` 并添加显式 `Migration`；仅既�
 | `python tools/check-motion-boundaries.py` | 检查业务页面是否绕开具名动效入口 |
 | `./gradlew -p buildSrc graphicsResourcesRegression --no-daemon` | 验证图形资源归属与校验逻辑 |
 | `./gradlew :engine:jsHarness --no-daemon` | 用本地 Node.js 验证 Web v2 桥；也接入 `:engine:check` |
+| `./gradlew :engine:jsSaveIdentityHarness --no-daemon` | 用本地 Node.js 验证 MV v1/v2 存档身份判定；也接入 `:engine:check`（两者同受 `-PskipJsHarness` 控制） |
 | `cargo test --manifest-path engine/rust/Cargo.toml --locked` | 修改 XP3 Rust 时运行宿主测试 |
 | `./gradlew :app:printAppVersion --no-daemon` | 输出版本名与自动推导的 versionCode |
 
