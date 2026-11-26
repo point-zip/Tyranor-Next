@@ -81,21 +81,34 @@ class RpgMakerNameMatcherTest {
     }
 
     /**
-     * 超过条目上限：只保留精确与大小写不敏感两级。
+     * 大目录不再关闭空白容忍。
      *
-     * 这条策略必须由服务器与 fs 桥共用同一实现——否则同一路径会出现
-     * 「XHR 404、fs.existsSync 为真」的分裂（旧注释里禁止的形态）。
+     * 以前单目录超过 4096 条时第 3/4 级被整段跳过（担心 O(n) 比对太贵）；归一键索引化之后，
+     * 条目数只影响「缓存与否」，不影响匹配结论。这条契约必须由服务器与 fs 桥共用同一实现，
+     * 否则同一路径会出现「XHR 404、fs.existsSync 为真」的分裂。
      */
     @Test
-    fun oversizedDirectoryKeepsOnlyExactAndCaseInsensitive() {
-        val dir = listOf("a.png", "B.PNG", "c .png")
-        // 上限以内：空白容忍生效
-        assertEquals("c .png", RpgMakerNameMatcher.match(dir, "c  .png", maxFuzzyEntries = 10))
-        // 超过上限：空白容忍被关闭（精确/大小写不敏感仍可用）
-        assertNull(RpgMakerNameMatcher.match(dir, "c  .png", maxFuzzyEntries = 2))
-        assertEquals("a.png", RpgMakerNameMatcher.match(dir, "a.png", maxFuzzyEntries = 2))
-        assertEquals("B.PNG", RpgMakerNameMatcher.match(dir, "b.png", maxFuzzyEntries = 2))
-        // ≤ 0 表示不设上限（仅测试/特殊场景）
-        assertEquals("c .png", RpgMakerNameMatcher.match(dir, "c  .png", maxFuzzyEntries = 0))
+    fun largeDirectoryStillMatchesWhitespaceVariants() {
+        val names = (1..5_000).map { "f$it.png" } + "c .png"
+        assertEquals("c .png", RpgMakerNameMatcher.match(names, "c  .png"))
+        assertEquals("B5.PNG", RpgMakerNameMatcher.match(listOf("B5.PNG") + names, "b5.png"))
+        assertNull(
+            "歧义仍是未命中，不因为目录大就猜一个",
+            RpgMakerNameMatcher.match(names + listOf("x\u3000y.png", "x\ty.png"), "x y.png"),
+        )
+    }
+
+    /** 索引版与列表版必须给出同一结论（生产走前者，测试与旧调用点走后者）。 */
+    @Test
+    fun indexedAndListMatchingAgree() {
+        val dir = listOf("a.png", "B.PNG", "c .png", "d\t.png", "e　.png")
+        val indexed = RpgMakerNameMatcher.Names(dir)
+        for (requested in listOf("a.png", "b.png", "c  .png", "c .png", "d .png", "e .png", "missing.png")) {
+            assertEquals(
+                "请求 $requested 的结论必须与列表版一致",
+                RpgMakerNameMatcher.match(dir, requested),
+                RpgMakerNameMatcher.match(indexed, requested),
+            )
+        }
     }
 }

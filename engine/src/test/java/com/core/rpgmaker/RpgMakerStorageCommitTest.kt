@@ -180,8 +180,14 @@ class RpgMakerStorageCommitTest {
         assertEquals(output.readText(), 0, process.exitValue())
 
         val previousRun = org.json.JSONObject(journal().readText()).getString("run")
-        assertEquals(1, bridge(1).commitCode(mapOf("62.dat" to "CURRENT")))
+        // 63.dat 还在上一进程的队列里：这次提交必须先覆盖队列（慢路径），
+        // 于是队列被改写成当前进程的 run——run 是「这份队列由谁写」的标记
+        assertEquals(2, bridge(1).commitCode(mapOf("63.dat" to "CURRENT")))
         assertNotEquals("两个实际 JVM 必须持有不同 run", previousRun, org.json.JSONObject(journal().readText()).getString("run"))
+
+        // 62.dat 不在队列里：直接落盘（乐观物化），不再为一次写多付一份 journal
+        assertEquals(1, bridge(1).commitCode(mapOf("62.dat" to "DIRECT")))
+        assertEquals("DIRECT", target("62.dat").readText())
 
         // 本进程的 clear 必须覆盖上一进程留下的条目（跨进程期号按最旧处理）
         bridge(2).commitCode(emptyMap(), clear = true)
@@ -293,5 +299,34 @@ class RpgMakerStorageCommitTest {
         repeat(16) { index -> accept(bridge, "${index.toString(16)}.dat", "v$index") }
         assertFalse("每次接收后立即物化，队列不应随写入次数增长", journal().exists())
         assertEquals("v15", target("f.dat").readText())
+    }
+
+    /**
+     * 另一个键还在队列里时，单键写入仍走直接路径。
+     *
+     * 这是乐观物化的收益点：只有当**这个键自己**还有未落盘意图时才需要先覆盖队列；
+     * 别人的条目与本键无关，不该让每次 `setItem` 都重写整份队列。
+     */
+    @Test
+    fun aPendingKeyDoesNotForceOtherWritesIntoTheJournal() {
+        val blocked = File(store, "61.dat").apply { mkdirs() }
+        File(blocked, "child").writeText("x")
+        val bridge = bridge(1)
+        assertEquals(2, bridge.commitCode(mapOf("61.dat" to "PENDING")))
+        val queuedBefore = journal().readText()
+
+        assertEquals(1, bridge.commitCode(mapOf("62.dat" to "DIRECT")))
+        assertEquals("DIRECT", target("62.dat").readText())
+        assertEquals("另一个键的队列内容不该被这次直接写碰过", queuedBefore, journal().readText())
+    }
+
+    /** 删除同样走直接路径：确认一次删除不该为它写一份队列。 */
+    @Test
+    fun anAcceptedDeleteDoesNotCreateAJournal() {
+        val bridge = bridge(1)
+        accept(bridge, "61.dat", "VALUE")
+        assertEquals(1, bridge.commitCode(emptyMap(), deletes = listOf("61.dat")))
+        assertFalse(target().exists())
+        assertFalse("删除走直接路径，不该为它写一份队列", journal().exists())
     }
 }

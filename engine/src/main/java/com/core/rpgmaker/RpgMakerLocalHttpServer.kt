@@ -100,10 +100,14 @@ internal class RpgMakerLocalHttpServer(
         this.thread = Thread(this, "YukiRpgMakerLocalHttpServer").apply { isDaemon = true }
         // keep-alive 下 worker 会阻塞在「等下一个请求」上，core=2 会让有效并发恒为 2
         // （ThreadPoolExecutor 只在队列满时才扩线程）：首页并发取 3 个脚本就会排队。
-        // 因此 core = max = 8（Chromium 同源最多 6 条连接），并允许核心线程空闲回收。
+        // 因此 core = max = 16 并允许核心线程空闲回收：
+        //  - Chromium 同源上限是 6 条，但匿名/crossorigin（字体、`credentials:'omit'`）走
+        //    独立 socket 池、`<audio>/<video>` 长流也各占一条，8 条很容易被穿透；
+        //  - 多出来的连接会排队等到某个 worker 空闲（空闲等待最长 KEEPALIVE_IDLE_TIMEOUT_MS），
+        //    池开大是为了让这种排队在常见并发下不发生。
         this.clients = ThreadPoolExecutor(
-            8, 8, 30L, TimeUnit.SECONDS,
-            ArrayBlockingQueue<Runnable>(64),
+            16, 16, 30L, TimeUnit.SECONDS,
+            ArrayBlockingQueue<Runnable>(128),
             { runnable: Runnable -> Thread(runnable, "YukiRpgMakerHttpClient").apply { isDaemon = true } },
             ThreadPoolExecutor.AbortPolicy(),
         ).apply { allowCoreThreadTimeOut(true) }
@@ -165,14 +169,26 @@ internal class RpgMakerLocalHttpServer(
         private const val MAX_HEADER_LINE_CHARS = 16 * 1024
         private const val MAX_HEADER_COUNT = 100
 
-        /** 单连接最多复用的请求数（防止异常客户端长期占用工作线程）。 */
-        private const val MAX_KEEPALIVE_REQUESTS = 96
+        /**
+         * 单连接最多复用的请求数。
+         *
+         * 只防「异常客户端永不复用/永不让位」，不是缓存策略：一次场景加载几百个素材请求
+         * 会落在同两条连接上，上限太小会让浏览器频繁重连（虽然透明，但白付握手与调度）。
+         */
+        private const val MAX_KEEPALIVE_REQUESTS = 1_024
 
         /** 首个请求的读取超时（含请求头）。 */
         private const val REQUEST_READ_TIMEOUT_MS = 15_000
 
-        /** keep-alive 空闲等待上限；同时写进 Keep-Alive 响应头。 */
-        private const val KEEPALIVE_IDLE_TIMEOUT_MS = 1_500
+        /**
+         * keep-alive 空闲等待上限；同时写进 Keep-Alive 响应头。
+         *
+         * 这段时间内 worker 一直被这条连接占着（阻塞在读下一个请求上），所以不能太长：
+         * 浏览器对 localhost 重连的代价可以忽略，而「池被空转连接占满」的代价是别的请求
+         * 排队。取 1s 是 `Keep-Alive: timeout` 只能写整秒（见 [connectionHeader]）的前提下
+         * 与响应头保持一致的最小值。
+         */
+        private const val KEEPALIVE_IDLE_TIMEOUT_MS = 1_000
 
         /**
          * 只读素材/脚本的缓存策略：允许 WebView 在会话内直接复用（旧实现一律 `no-cache`，
@@ -531,9 +547,19 @@ internal class RpgMakerLocalHttpServer(
     private fun fileEtag(file: File): String =
         "\"${file.length().toString(16)}-${file.lastModified().toString(16)}\""
 
+    /**
+     * `Keep-Alive: timeout` 只能写整秒：这里向上取整，让「声明的超时」不小于实际等待。
+     *
+     * 向下截断（1.5s → `timeout=1`）会让客户端以为连接更早失效；向上取整只是保守声明，
+     * 服务端仍按 [KEEPALIVE_IDLE_TIMEOUT_MS] 归还 worker。
+     */
     private fun connectionHeader(keepAlive: Boolean): String =
-        if (keepAlive) "Connection: keep-alive\r\nKeep-Alive: timeout=${KEEPALIVE_IDLE_TIMEOUT_MS / 1000}\r\n"
-        else "Connection: close\r\n"
+        if (keepAlive) {
+            val seconds = ((KEEPALIVE_IDLE_TIMEOUT_MS + 999) / 1000).coerceAtLeast(1)
+            "Connection: keep-alive\r\nKeep-Alive: timeout=$seconds\r\n"
+        } else {
+            "Connection: close\r\n"
+        }
 
     private fun sendNotModified(socket: Socket, etag: String, cacheControl: String, keepAlive: Boolean) {
         val out = BufferedOutputStream(socket.getOutputStream())
@@ -638,7 +664,8 @@ internal class RpgMakerLocalHttpServer(
      *
      * 目录枚举走 [dirIndex]（按「目录 + mtime」缓存）：旧实现每次 miss 都对每一级
      * `listFiles()` 并构造 `File` 列表，素材名被规范化时会在同一目录上反复扫描。
-     * 条目上限在 [RpgMakerNameMatcher] 内部统一处理（fs 桥用同一函数，两端结论必须一致）。
+     * 匹配由 [RpgMakerNameMatcher] 统一实现（fs 桥用同一函数、同一份索引，两端结论必须
+     * 一致）；模糊两级走缓存目录里的归一键哈希表，条目数不再影响匹配能力。
      */
     private fun resolveByName(uri: String?, allowWhitespaceTolerance: Boolean): File? {
         if (uri == null || uri.isEmpty()) return null
@@ -660,10 +687,10 @@ internal class RpgMakerLocalHttpServer(
                 current = File(current, matched)
                 continue
             }
-            val children = dirIndex.children(current) ?: return null
-            // 条目上限由 [RpgMakerNameMatcher] 统一实现：fs 桥走同一个函数，
+            // 名字集合带惰性索引，跟着目录缓存走：匹配实现与 fs 桥是同一个函数，
             // 保证「同一路径经 XHR 与经 fs 得到同一结论」这个不变量不被两边各写一套打破
-            val matchedName = RpgMakerNameMatcher.match(children, part) ?: return null
+            val names = dirIndex.entries(current) ?: return null
+            val matchedName = RpgMakerNameMatcher.match(names, part) ?: return null
             current = File(current, matchedName)
         }
         val target = current.canonicalFile

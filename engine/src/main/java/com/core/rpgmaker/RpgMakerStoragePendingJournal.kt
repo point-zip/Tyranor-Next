@@ -103,6 +103,27 @@ internal object RpgMakerStoragePendingJournal {
 
     internal fun isStorageName(name: String): Boolean = NAME_PATTERN.matches(name)
 
+    /** 值是否超过队列接受的上限（超过时提交必须整份拒绝，不能先落盘再报失败）。 */
+    internal fun valueTooLarge(value: String): Boolean = value.length > MAX_VALUE_CHARS
+
+    /**
+     * 该文件名是否还有未落盘意图（队列或崩溃遗留的 `.claim` 里）。
+     *
+     * 正常路径（每次修改立即物化）两个文件都不存在，这里只做两次 `exists()`，不解析；
+     * 只有异常期（物化失败过）才会真的读一份队列——那正是常规路径本来就要付的代价。
+     * 调用方据此决定「直接落盘」还是「先覆盖队列」：队列里若还有这个键的旧值，
+     * 直接落盘会让下一次重放把旧值盖回来。
+     */
+    internal fun isPending(storeDir: File, name: String): Boolean {
+        val journal = File(storeDir, FILE_NAME)
+        val claim = File(storeDir, CLAIM_NAME)
+        if (!journal.exists() && !claim.exists()) return false
+        return synchronized(lock) {
+            (read(storeDir)?.entries?.containsKey(name) == true) ||
+                (parse(claim)?.entries?.containsKey(name) == true)
+        }
+    }
+
     internal fun pendingEntries(storeDir: File): LinkedHashMap<String, Entry> = synchronized(lock) {
         val merged = LinkedHashMap<String, Entry>()
         parse(File(storeDir, CLAIM_NAME))?.entries?.forEach { (name, entry) -> merged[name] = entry }

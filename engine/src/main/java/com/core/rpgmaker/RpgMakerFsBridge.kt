@@ -109,8 +109,8 @@ internal class RpgMakerFsBridge(
         for (part in relative.split("/")) {
             if (part.isEmpty() || part == ".") continue
             if (part == "..") return null
-            val children = dirIndex.children(current) ?: return null
-            val matchedName = RpgMakerNameMatcher.match(children, part) ?: return null
+            val names = dirIndex.entries(current) ?: return null
+            val matchedName = RpgMakerNameMatcher.match(names, part) ?: return null
             current = File(current, matchedName)
         }
         return try {
@@ -164,8 +164,9 @@ internal class RpgMakerFsBridge(
     /**
      * 接收一次 Storage 修改。返回值：0 = 未接收，1 = 已接收并落盘，2 = 已接收待物化。
      *
-     * 只有非 0 时才可更新 JS 镜像；队列持久化成功即视为已接收，落盘失败只是延后。
-     * 接收后立即尝试物化，队列通常保持为空，避免「每次修改整份重写队列」的平方级写放大。
+     * 只有非 0 时才可更新 JS 镜像。单键修改走「先落盘、失败才记账」的快速路径
+     * （见 [commitDirect]）：正常路径只有一次 `.dat` 写，恢复队列保持为空；
+     * 复杂载荷（`clear`/批量）仍先写队列再批量物化，避免逐键重写整份队列。
      * 目录锁贯穿接收/重放/物化，不能再依赖退出回调或不同 bridge 的实例锁交接。
      */
     @JavascriptInterface
@@ -211,6 +212,28 @@ internal class RpgMakerFsBridge(
                     }
                 }
             }
+            // 正常路径：单键修改且该键不在恢复队列里 → 直接物化，不写队列。
+            // 队列只是「物化失败」时的恢复载体：过去每次 setItem 都先写队列、再写 .dat、
+            // 最后删队列（2 次 fsync + 3 次元数据操作），而成功路径上那份队列从头到尾
+            // 没人读。现在先尝试落盘，失败才补队列——语义不变：
+            //   返回 1 = 返回前已落盘；返回 2 = 已进队列、待重试。
+            if (!clear && writes.size + deletes.size == 1) {
+                val name = writes.keys.firstOrNull() ?: deletes.first()
+                when (commitDirect(name, writes[name])) {
+                    Direct.WRITTEN -> return@withStorageLock 1
+                    Direct.REJECTED -> return@withStorageLock 0
+                    Direct.STAGED -> {
+                        // 已经试过落盘并失败：只把意图交给队列，不在同一把锁里再写一遍
+                        if (!RpgMakerStoragePendingJournal.stage(storeDir, session, writes, deletes, accepted = true)) {
+                            return@withStorageLock 0
+                        }
+                        writes.keys.forEach { RpgMakerStorageWriteLedger.record(requireStorageFile(it).path, session) }
+                        deletes.forEach { RpgMakerStorageWriteLedger.record(requireStorageFile(it).path, session) }
+                        return@withStorageLock 2
+                    }
+                    Direct.NOT_APPLICABLE -> Unit
+                }
+            }
             if (writes.keys.any { RpgMakerStorageWriteLedger.isSuperseded(requireStorageFile(it).path, session) }) {
                 return@withStorageLock 0
             }
@@ -249,6 +272,52 @@ internal class RpgMakerFsBridge(
     } catch (error: Throwable) {
         Log.w(TAG, "Storage mutation was not accepted", error)
         0
+    }
+
+    /** 单键快速路径的结果；见 [commitDirect]。 */
+    private enum class Direct {
+        /** 已写盘/已删除，调用方可以按「已接收并落盘」（返回码 1）答复页面。 */
+        WRITTEN,
+        /** 已尝试落盘但失败：调用方只需把意图交给恢复队列（返回码 2）。 */
+        STAGED,
+        /** 按协议拒绝（非法文件名、值超限、已被更新会话接管），调用方返回 0。 */
+        REJECTED,
+        /** 不该走快速路径（该键还有旧意图在队列里等）：交给常规路径。 */
+        NOT_APPLICABLE,
+    }
+
+    /**
+     * 单键修改的快速路径：直接写/删 `.dat`，不经过恢复队列。
+     *
+     * 恢复队列的职责只是「物化失败的数据下次文档还能恢复」，正常路径上它写进去、
+     * 随后立刻被删掉，从来没人读——却把一次 `setItem` 从 1 次 fsync 抬到 2 次。
+     * 这里改成「先落盘、失败再记账」，返回码契约完全不变（1 = 已落盘，2 = 待物化）。
+     *
+     * 不适用（返回 [Direct.NOT_APPLICABLE]）的三种情况都必须交给常规路径：
+     *  - 该键在队列里还有旧意图：必须先覆盖队列，否则重放会用旧值盖回新值；
+     *  - 值超过单次写入上限：常规路径会把它收进队列并报「已接收待物化」，保持同一结论；
+     *  - 复杂载荷（clear/批量）：走批量物化，避免逐键各写一遍队列。
+     */
+    private fun commitDirect(name: String, value: String?): Direct {
+        // 非法文件名在这里抛 IOException，由 commitStorageMutation 的 catch 统一返回 0
+        val file = requireStorageFile(name)
+        // 超过队列接受上限：常规路径会整份拒绝（返回 0），保持同一结论
+        if (value != null && RpgMakerStoragePendingJournal.valueTooLarge(value)) return Direct.NOT_APPLICABLE
+        val payload = value?.toByteArray(StandardCharsets.UTF_8)
+        // 超过单次写入上限：常规路径会把它收进队列并报「已接收待物化」，保持同一结论
+        if (payload != null && payload.size > MAX_WRITE_BYTES) return Direct.NOT_APPLICABLE
+        // 更新的会话已经写过这个路径：与常规路径一致，拒绝而不是让位
+        if (RpgMakerStorageWriteLedger.isSuperseded(file.path, session)) return Direct.REJECTED
+        // 队列里还有这个键的旧意图：常规路径会先覆盖它，快速路径不能越过这一步
+        if (RpgMakerStoragePendingJournal.isPending(storeDir, name)) return Direct.NOT_APPLICABLE
+        val written = if (payload == null) {
+            removeResolved(file)
+        } else {
+            writeResolved(file) { it.write(payload) }
+        }
+        if (!written) return Direct.STAGED
+        // writeResolved / removeResolved 都在锁内记了账（更早的会话不得覆盖这个路径）
+        return Direct.WRITTEN
     }
 
     /** 按内容核对最新接收条目后物化并确认；过时 JS 定时器不能覆盖新修改。 */

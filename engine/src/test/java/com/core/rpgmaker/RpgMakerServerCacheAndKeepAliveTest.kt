@@ -298,12 +298,12 @@ class RpgMakerServerCacheAndKeepAliveTest {
 
 
     /**
-     * keep-alive 下 worker 会阻塞在「等下一个请求」上，若线程池 core=max=2，第 3 条及之后的
-     * 连接会排队到空闲超时才被服务（首页并发取 3 个兼容层脚本就会命中）。这里同时开 6 条
-     * 连接（Chromium 同源上限）并断言都在 1200ms 内返回。
+     * keep-alive 下 worker 会阻塞在「等下一个请求」上，池太小时后续连接会排队到空闲超时
+     * 才被服务（首页并发取 3 个兼容层脚本就会命中）。这里同时开 6 条连接（Chromium
+     * 同源上限）并断言都在 700ms 内返回。
      *
-     * 上界必须明显小于服务端空闲超时（1500ms）：否则「排队等到超时」这条回退路径
-     * （约 1500ms）也能通过，断言就失去区分度。
+     * 上界必须明显小于服务端空闲超时（1000ms）：否则「排队等到超时」这条回退路径
+     * （约 1000ms）也能通过，断言就失去区分度。
      */
     @Test
     fun sixConcurrentConnectionsAreServedInParallel() {
@@ -324,8 +324,8 @@ class RpgMakerServerCacheAndKeepAliveTest {
             val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
             assertTrue("6 条并发连接必须全部成功，实际 $codes", codes.all { it == 200 })
             assertTrue(
-                "并发请求不得排队到空闲超时（实际 ${elapsedMs}ms，上界 1200ms 必须小于服务端 1500ms 空闲超时）",
-                elapsedMs < 1_200L,
+                "并发请求不得排队到空闲超时（实际 ${elapsedMs}ms，上界 700ms 必须明显小于服务端 1000ms 空闲超时）",
+                elapsedMs < 700L,
             )
         } finally {
             sockets.forEach { runCatching { it.close() } }
