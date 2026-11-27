@@ -1,5 +1,6 @@
 package com.tyranor.next.ui.common
 
+import android.animation.ValueAnimator
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.LinearEasing
@@ -7,6 +8,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.VectorConverter
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -26,6 +28,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,6 +36,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Modifier
@@ -59,6 +63,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.LayoutDirection
+import com.tyranor.next.theme.BookSerif
+import com.tyranor.next.theme.BookSerifBold
+import com.tyranor.next.theme.CurrentBookPaperPalette
+import com.tyranor.next.theme.LocalShelfBookLeaf
 import com.tyranor.next.theme.AppComponentShape
 import com.tyranor.next.theme.TabLensRimMiddle
 import com.tyranor.next.theme.TabLensRimBottom
@@ -66,8 +74,10 @@ import com.tyranor.next.theme.AppThemeColors
 import com.tyranor.next.theme.GlassSurfaceHigh
 import com.tyranor.next.theme.GlassText
 import com.tyranor.next.theme.GlassTextSecondary
+import com.tyranor.next.theme.MilkSurfaceStrong
 import com.tyranor.next.theme.NavWhite
 import com.tyranor.next.theme.PageSecondaryTextColor
+import com.tyranor.next.theme.SecondaryTextColor
 import com.tyranor.next.theme.SheetSecondaryTextColor
 import com.tyranor.next.theme.DialogItemSurface
 import com.tyranor.next.theme.LocalAppDialogContent
@@ -190,13 +200,14 @@ fun SlidingTabRow(
      */
     pager: TabPagerState? = null,
     scrollResetKey: Int = 0,
+    enabled: Boolean = true,
 ) {
     if (tabs.isEmpty()) return
     val safeIndex = selectedIndex.coerceIn(0, tabs.lastIndex)
     if (scrollable) {
-        ScrollableSlidingTabRow(tabs, safeIndex, onTabSelected, modifier, scrollResetKey)
+        ScrollableSlidingTabRow(tabs, safeIndex, onTabSelected, modifier, scrollResetKey, enabled)
     } else {
-        FixedSlidingTabRow(tabs, safeIndex, onTabSelected, modifier, pager)
+        FixedSlidingTabRow(tabs, safeIndex, onTabSelected, modifier, pager, enabled)
     }
 }
 
@@ -208,6 +219,7 @@ private fun FixedSlidingTabRow(
     onTabSelected: (Int) -> Unit,
     modifier: Modifier,
     pager: TabPagerState? = null,
+    enabled: Boolean = true,
 ) {
     val shape = AppComponentShape
     val density = LocalDensity.current
@@ -248,7 +260,7 @@ private fun FixedSlidingTabRow(
             }
         }
         Row(
-            modifier = Modifier.fillMaxWidth().fillMaxHeight().selectableGroup(),
+            modifier = Modifier.fillMaxWidth().fillMaxHeight().then(if (enabled) Modifier.selectableGroup() else Modifier),
             horizontalArrangement = Arrangement.spacedBy(FixedTabSpacing),
         ) {
             tabs.forEachIndexed { index, label ->
@@ -257,6 +269,7 @@ private fun FixedSlidingTabRow(
                     selected = index == highlighted,
                     onClick = { onTabSelected(index) },
                     modifier = Modifier.weight(1f).fillMaxHeight(),
+                    enabled = enabled,
                 )
             }
         }
@@ -431,6 +444,7 @@ private fun ScrollableSlidingTabRow(
     onTabSelected: (Int) -> Unit,
     modifier: Modifier,
     scrollResetKey: Int,
+    enabled: Boolean = true,
 ) {
     val shape = AppComponentShape
     val density = LocalDensity.current
@@ -455,7 +469,7 @@ private fun ScrollableSlidingTabRow(
         positionedOnce = true
     }
     Box(modifier.fillMaxWidth()) {
-        Box(Modifier.fillMaxWidth().horizontalScroll(scrollState)) {
+        Box(Modifier.fillMaxWidth().horizontalScroll(scrollState, enabled = enabled)) {
             // 内容坐标系：指示器与标签行同为一个 Box 的子节点，坐标原点一致
             Box(Modifier.height(SlidingTabHeight)) {
                 geometry[selectedIndex]?.let { target ->
@@ -469,7 +483,7 @@ private fun ScrollableSlidingTabRow(
                     )
                 }
                 Row(
-                    modifier = Modifier.fillMaxHeight().selectableGroup(),
+                    modifier = Modifier.fillMaxHeight().then(if (enabled) Modifier.selectableGroup() else Modifier),
                     horizontalArrangement = Arrangement.spacedBy(ScrollableTabSpacing),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -480,6 +494,7 @@ private fun ScrollableSlidingTabRow(
                             label = label,
                             selected = index == selectedIndex,
                             onClick = { onTabSelected(index) },
+                            enabled = enabled,
                             modifier = Modifier
                                 .fillMaxHeight()
                                 // 记录相对内容坐标系的几何：onGloballyPositioned 放在链首，
@@ -526,7 +541,13 @@ private fun TabIndicator(
             }
             .clip(shape)
             .background(tabIndicatorContainer())
-            .glassBorder(shape = shape),
+            .then(
+                if (LocalShelfBookLeaf.current) {
+                    Modifier.border(0.85.dp, CurrentBookPaperPalette.popupBorder, shape)
+                } else {
+                    Modifier.glassBorder(shape = shape)
+                },
+            ),
     )
 }
 
@@ -539,14 +560,32 @@ private fun TabLabel(
     modifier: Modifier = Modifier,
     /** 被透镜盖住的程度（0..1），文字按它淡出；在图层阶段读取。 */
     hide: () -> Float = NoHide,
+    enabled: Boolean = true,
 ) {
     Box(
         modifier = modifier
             // 按压只做以中心为轴的轻微缩放：不跟手偏移、不被扯动（follow = 0），文字始终钉在指示器正中，
             // 不会随手指落点滑到选框的上下半边
-            .pressSquish(scale = 0.92f, follow = 0.dp)
+            .pressSquish(enabled = enabled, scale = 0.92f, follow = 0.dp)
             .clip(AppComponentShape)
-            .selectable(selected = selected, role = Role.Tab, onClick = onClick)
+            // 既有标签继承主题反馈；藏书阁有形变时不叠高亮，否则用涟漪保留按压反馈。
+            .then(
+                if (enabled) {
+                    Modifier.selectable(
+                        selected = selected,
+                        interactionSource = null,
+                        indication = when {
+                            !LocalSlidingTabLightPanel.current -> LocalIndication.current
+                            MotionMode.enhanced && ValueAnimator.areAnimatorsEnabled() -> null
+                            else -> ripple()
+                        },
+                        role = Role.Tab,
+                        onClick = onClick,
+                    )
+                } else {
+                    Modifier.clearAndSetSemantics { }
+                },
+            )
             .padding(horizontal = TabLabelHorizontalPadding),
         contentAlignment = Alignment.Center,
     ) {
@@ -562,6 +601,7 @@ private fun TabLabel(
                 pop.animateTo(1f, spring(dampingRatio = 0.34f, stiffness = 480f))
             }
         }
+        val inBook = LocalShelfBookLeaf.current
         Text(
             modifier = Modifier.graphicsLayer {
                 scaleX = pop.value
@@ -569,7 +609,11 @@ private fun TabLabel(
                 alpha = 1f - hide()
             },
             text = label,
-            style = MaterialTheme.typography.titleMedium,
+            style = if (inBook) {
+                MaterialTheme.typography.titleMedium.copy(fontFamily = if (selected) BookSerifBold else BookSerif)
+            } else {
+                MaterialTheme.typography.titleMedium
+            },
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             // 选中 ↔ 未选中：「增强」档文字颜色随指示器滑动弹簧淡变（新选中项变深、旧选中项变浅），「普通」档直接切换
             color = if (MotionMode.enhanced) {
@@ -583,23 +627,30 @@ private fun TabLabel(
     }
 }
 
+/** 藏书阁等浅底半透明面板内的取色标记：不触发弹窗/抽屉窗口语义，仅让白雾玻璃浅面托盘取亮指示器与深色次字。 */
+internal val LocalSlidingTabLightPanel = staticCompositionLocalOf { false }
+
 /** 弹窗上下文的局部取色适配：指示器复用反色条目，避免与弹窗面板同色。
- * 由公共弹窗提供上下文，调用方不传色值；页内标签栏保留既有取色分派，玻璃档各用自身动态常量。
+ * 由公共弹窗/浅底托盘提供上下文，调用方不传色值；页内标签栏保留既有取色分派，玻璃档各用自身动态常量。
  */
 @Composable
 private fun tabIndicatorContainer(): Color = when {
+    LocalShelfBookLeaf.current -> CurrentBookPaperPalette.washSubtle
+    LocalSlidingTabLightPanel.current && AppThemeColors.isMilkGlass -> MilkSurfaceStrong
     LocalAppSheetContent.current && AppThemeColors.isMilkGlass -> DialogItemSurface
     LocalAppDialogContent.current -> DialogItemSurface
     AppThemeColors.isGlass -> GlassSurfaceHigh
     else -> NavWhite
 }
 
-/** 文字色：选中不跟随主题色（默认 [TextColor]），玻璃系固定浅色；未选中用对应次级文字色。 */
+/** 文字色：选中不跟随主题色（默认 [TextColor]），玻璃系固定浅色；未选中用对应次级文字色；书页内自动切纸墨色。 */
 @Composable
 private fun tabContentColor(selected: Boolean): Color = when {
+    LocalShelfBookLeaf.current -> if (selected) CurrentBookPaperPalette.ink else CurrentBookPaperPalette.inkSecondary
     selected && AppThemeColors.isGlass -> GlassText
     selected -> TextColor
     AppThemeColors.isGlass -> GlassTextSecondary
+    LocalSlidingTabLightPanel.current && AppThemeColors.isMilkGlass -> SecondaryTextColor
     LocalAppSheetContent.current && AppThemeColors.isMilkGlass -> SheetSecondaryTextColor
     AppThemeColors.isMilkGlass -> PageSecondaryTextColor
     LocalAppDialogContent.current -> UnselectedGrey

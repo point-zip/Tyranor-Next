@@ -3,7 +3,6 @@ package com.core.rpgmaker
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Color
 import android.net.Uri
@@ -18,7 +17,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
-import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -27,9 +25,11 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.Toast
 import com.core.engine.DoubleBackExit
+import com.core.engine.EnginePlayerOrientation
 import com.core.engine.EnginePrefs
 import com.core.engine.EngineSessionRegistry
 import com.core.engine.EngineStartupOverlay
+import com.core.engine.EngineWebChromeClient
 import com.core.engine.EngineThemeColors
 import com.core.engine.LaunchContract
 import com.core.engine.R
@@ -57,7 +57,7 @@ import org.json.JSONObject
  */
 class RpgMakerActivity : Activity() {
     override fun setRequestedOrientation(requestedOrientation: Int) {
-        super.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
+        EnginePlayerOrientation.applyWithSuper(this) { super.setRequestedOrientation(it) }
     }
 
     private var webView: WebView? = null
@@ -138,6 +138,7 @@ class RpgMakerActivity : Activity() {
                 intent.removeExtra(LaunchContract.PLAYTIME_SESSION_STARTED_AT)
             }
         }
+        EnginePlayerOrientation.syncOnNewIntent(this, intent, changed)
         setIntent(intent)
         if (changed && !isFinishing) {
             Log.i(TAG, "onNewIntent relaunch with changed intent; recreate")
@@ -145,11 +146,21 @@ class RpgMakerActivity : Activity() {
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        EnginePlayerOrientation.saveState(this, outState)
+        super.onSaveInstanceState(outState)
+    }
+
     /** 影响引擎行为的 Intent extras 摘要，用于判断单游戏重启是否需要重建。 */
     private fun behaviorSignature(intent: Intent): String = listOf(
         resolveGameDir(intent),
         intent.getBooleanExtra(LaunchContract.SCOPED_SAVE_DIR, false).toString(),
         intent.getStringExtra(LaunchContract.SCOPED_SAVE_ROOT),
+        if (intent.hasExtra(LaunchContract.WEB_EXTERNAL_NETWORK)) {
+            intent.getBooleanExtra(LaunchContract.WEB_EXTERNAL_NETWORK, false).toString()
+        } else {
+            null
+        },
         intent.getBooleanExtra(LaunchContract.RPG_MAKER_MOD_ENABLED, true).toString(),
         intent.getStringExtra(LaunchContract.RPG_MAKER_MOD_GAME_ID),
         intent.getStringExtra(LaunchContract.RPG_MAKER_VERSION),
@@ -157,6 +168,7 @@ class RpgMakerActivity : Activity() {
     ).joinToString("\u0000")
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        EnginePlayerOrientation.lockOnCreate(this, savedInstanceState)
         super.onCreate(savedInstanceState)
         // 新会话接管 :rpgmaker 进程：推进期号，让上一个实例已排队的 killProcess 失效。
         // 不推进的话，用户在旧会话退出后的延迟窗口内重开游戏，会被旧任务杀掉整个进程
@@ -170,8 +182,12 @@ class RpgMakerActivity : Activity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             runCatching { WebView.setDataDirectorySuffix("rpgmaker") }
         }
-        allowExternalNetwork = getSharedPreferences(EnginePrefs.APP_PREFS, Context.MODE_PRIVATE)
-            .getBoolean(EnginePrefs.KEY_TYRANO_EXTERNAL_NETWORK, false)
+        allowExternalNetwork = if (intent.hasExtra(LaunchContract.WEB_EXTERNAL_NETWORK)) {
+            intent.getBooleanExtra(LaunchContract.WEB_EXTERNAL_NETWORK, false)
+        } else {
+            getSharedPreferences(EnginePrefs.APP_PREFS, Context.MODE_PRIVATE)
+                .getBoolean(EnginePrefs.KEY_TYRANO_EXTERNAL_NETWORK, false)
+        }
 
         gameDir = resolveGameDir(intent)
         Log.i(TAG, "onCreate gameDir=$gameDir")
@@ -353,8 +369,10 @@ class RpgMakerActivity : Activity() {
             val sessionConfig = "<script>window.__tyranorRpg={engine:'" +
                 (if (webGameType == WebGameType.RPG_MZ) "MZ" else "MV") +
                 "',version:'" + (normalizedVersion ?: "") + "'};</script>"
+            // 会话配置与会话强相关：即使兼容层资产缺失也要下发，否则 v2 的渲染器
+            // 「交还游戏 core」会静默退化成我们的实现，且原因只能从日志间接推断。
             val earlyHtml = if (polyfillAssets.isEmpty()) {
-                ""
+                if (v12Session) sessionConfig else ""
             } else {
                 sessionConfig + polyfillAssets.joinToString(separator = "") { script ->
                     // 键本身已含 `__tyranor__/` 前缀（它同时是 internalResources 的查找键），
@@ -625,7 +643,7 @@ class RpgMakerActivity : Activity() {
                 return uri?.takeUnless(::isAllowedGameResource)?.let { blockedResponse() }
             }
         }
-        browser.webChromeClient = object : WebChromeClient() {
+        browser.webChromeClient = object : EngineWebChromeClient(this) {
             override fun onConsoleMessage(consoleMessage: android.webkit.ConsoleMessage?): Boolean {
                 if (consoleMessage != null) {
                     val level = Log.INFO
@@ -670,6 +688,7 @@ class RpgMakerActivity : Activity() {
     }
 
     private fun handleRendererGone(view: WebView): Boolean {
+        (view.webChromeClient as? EngineWebChromeClient)?.dismissDialogs()
         if (webView !== view) {
             (view.parent as? ViewGroup)?.removeView(view)
             runCatching { view.destroy() }
@@ -890,6 +909,7 @@ class RpgMakerActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        EnginePlayerOrientation.applyLocked(this)
         enterFullscreen()
         inputRemap?.onResume()
         if (firstResume) firstResume = false else {
@@ -905,6 +925,7 @@ class RpgMakerActivity : Activity() {
     }
 
     override fun onDestroy() {
+        (webView?.webChromeClient as? EngineWebChromeClient)?.dismissDialogs()
         // 只有仍拥有会话的实例才能清理登记：旧实例的收尾晚于新实例 onCreate 时，
         // 无条件 clear 会把新会话刚写入的游戏目录抹掉
         if (sessionOwnership.isOwner(sessionEpochAtCreate)) {
@@ -955,7 +976,10 @@ class RpgMakerActivity : Activity() {
                     }
                     teardown.run()
                 }
-            }.onFailure { teardown.run() }
+            }.onFailure {
+                Log.w(TAG, "localStorage final flush could not be dispatched", it)
+                teardown.run()
+            }
         }
         runCatching { localServer?.stop() }
         localServer = null
@@ -1198,12 +1222,13 @@ class RpgMakerActivity : Activity() {
         /**
          * `finish()` 到 `killProcess` 的延迟。
          *
-         * 必须**大于** [FLUSH_TEARDOWN_WATCHDOG_MS]，否则进程会在 localStorage 落盘完成前
-         * 被杀掉（退出动画/界面早已不可见，多留几秒只是让收尾跑完，用户无感）。
-         * 不变量：`PROCESS_EXIT_DELAY_MS > FLUSH_TEARDOWN_WATCHDOG_MS`。
+         * 取值**大于** [FLUSH_TEARDOWN_WATCHDOG_MS]：看门狗从 `onDestroy` 起算，而 kill 从
+         * `finish()` 起算，中间还隔着退出转场，所以这只是一个「尽量让 WebView 收尾跑完」的
+         * 预算，不是硬保证。它管的是资源回收，与 Storage 落盘无关——已返回的修改在返回前
+         * 就已进入原生队列，`flushAll(true)` 本身不做 I/O。
          *
-         * 延迟越长，「旧会话的退出任务撞上新会话」的窗口越大，所以真正的保护是
-         * [sessionOwnership] 的期号比对，而不是这个数值本身。
+         * 延迟越长，「旧会话的退出任务撞上新会话」的窗口越大，因此真正保护新会话的是
+         * 会话期号复核（见上），不是这个延迟。
          */
         private const val PROCESS_EXIT_DELAY_MS = 3_000L
         private const val MAX_ENTRY_SEARCH_DEPTH = 2

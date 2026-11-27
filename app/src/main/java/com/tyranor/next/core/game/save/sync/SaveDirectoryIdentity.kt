@@ -32,7 +32,9 @@ internal fun saveDirectoryScopesOverlap(first: String, second: String): Boolean 
 internal fun requiresExternalSaveExitConfirmation(
     engine: EngineType,
     sdkInt: Int = Build.VERSION.SDK_INT,
-): Boolean = engine == EngineType.YURIS || (engine == EngineType.RENPY && sdkInt >= Build.VERSION_CODES.R)
+): Boolean = engine == EngineType.YURIS ||
+    engine == EngineType.EASYRPG ||
+    (engine == EngineType.RENPY && sdkInt >= Build.VERSION_CODES.R)
 
 /** Launch admission and whole-library sync only manage engines with a usable save interface. */
 internal fun supportsManagedSave(engine: EngineType, sdkInt: Int = Build.VERSION.SDK_INT): Boolean =
@@ -43,7 +45,12 @@ internal sealed interface SaveSyncLaunchAdmission {
     data object Disabled : SaveSyncLaunchAdmission
     data object Unmanaged : SaveSyncLaunchAdmission
     data object Unresolved : SaveSyncLaunchAdmission
-    data class Directory(val key: String, val exclusiveMutation: Boolean = false) : SaveSyncLaunchAdmission
+    data class Directory(
+        val key: String,
+        val exclusiveMutation: Boolean = false,
+        /** Changes re-admission even when a module reuses the same physical folder. */
+        val bindingIdentity: String? = null,
+    ) : SaveSyncLaunchAdmission
 }
 
 /** Re-admit after waiting; every managed launch shares the save-replacement fence. */

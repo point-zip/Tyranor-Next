@@ -27,6 +27,8 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.interaction.InteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.runtime.setValue
@@ -43,6 +45,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
@@ -234,6 +240,9 @@ fun <S> BlurCrossfade(
     blur: Dp = ContentBlurRadius,
     initialScale: Float = 0.92f,
     label: String = "BlurCrossfade",
+    /** 新内容淡入 / 旧内容淡出的时长（毫秒）；默认是通用节奏，只有换得很频繁的小块内容才缩短。 */
+    swapInMillis: Int = BLUR_SWAP_IN_MILLIS,
+    swapOutMillis: Int = BLUR_SWAP_OUT_MILLIS,
     contentKey: (S) -> Any? = { it },
     /** 语言变化造成的整屏文字替换默认不动画；只有被点选的控件自己的值（如语言下拉的当前值）才传 true。 */
     animateOnLocaleChange: Boolean = false,
@@ -250,10 +259,10 @@ fun <S> BlurCrossfade(
                 ContentTransform(EnterTransition.None, ExitTransition.None, sizeTransform = null)
             } else {
                 (
-                    fadeIn(MotionSprings.effects(BLUR_SWAP_IN_MILLIS)) +
+                    fadeIn(MotionSprings.effects(swapInMillis)) +
                         scaleIn(MotionTokens.content(), initialScale = initialScale)
                     ) togetherWith (
-                    fadeOut(MotionSprings.effects(BLUR_SWAP_OUT_MILLIS)) +
+                    fadeOut(MotionSprings.effects(swapOutMillis)) +
                         scaleOut(MotionTokens.contentExit(), targetScale = initialScale)
                     ) using SizeTransform(clip = false) { _, _ ->
                     MotionTokens.content(IntSize(1, 1))
@@ -518,6 +527,27 @@ private fun rollDirection(old: String, new: String): Int {
 }
 
 /**
+ * 「忙碌」的可见态：[busy] 持续超过 [delayMillis] 才变为 true，结束时立刻回落。
+ * 用于「任务在途时整页控件置灰」的场景：失败 / 瞬间完成的操作（如未配置服务器时点同步）只在数毫秒内翻转 busy，
+ * 直接把它当 enabled 用，连点会让整页控件反复闪灰。控件的真实可用性（拦截重复提交）仍应读取即时的 [busy]，只把视觉置灰延后。
+ * 「普通」档与原版一致，立刻跟随。
+ */
+@Composable
+fun rememberDelayedBusy(busy: Boolean, delayMillis: Long = 220L): Boolean {
+    if (!MotionMode.enhanced) return busy
+    var shown by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(busy) {
+        if (busy) {
+            kotlinx.coroutines.delay(delayMillis)
+            shown = true
+        } else {
+            shown = false
+        }
+    }
+    return busy && shown
+}
+
+/**
  * 延迟出现的加载转圈：「增强」档下快于 [delayMillis] 就加载完的场景用户只看到内容淡入、不会先闪一下转圈；
  * 超过才用 [BlurVisibility]（模糊 + 缩放）浮现。「普通」档与原版一致，立刻显示。
  * 只用于「页面 / 区块被动等待」的加载转圈；用户刚点了按钮的进度（顶栏刮削转圈等）应立即显示，不要延迟。
@@ -538,4 +568,60 @@ fun DelayedProgress(
         shown = true
     }
     BlurVisibility(visible = shown, modifier = modifier, label = "DelayedProgress") { content() }
+}
+
+private val BOOK_MARKER_SWEEP = MotionSprings.response<Float>(0.24f, 1f, 0.002f)
+private const val BOOK_MARKER_TOP = 0.18f
+private const val BOOK_MARKER_BOTTOM = 0.86f
+private val BOOK_MARKER_CORNER = 4.dp
+
+/** 书内条目的按压反馈：一道淡墨/荧光笔从左往右划过这一行，松手后等这一笔划完再淡出。 */
+@Composable
+fun Modifier.shelfBookMarker(interaction: InteractionSource, color: Color): Modifier {
+    val enhanced = MotionMode.enhanced
+    val sweep = remember { Animatable(0f) }
+    val ink = remember { Animatable(0f) }
+    LaunchedEffect(interaction, enhanced) {
+        var stroke: Job? = null
+        var generation = 0
+        interaction.interactions.collect { event ->
+            when (event) {
+                is PressInteraction.Press -> {
+                    generation++
+                    stroke?.cancel()
+                    stroke = launch {
+                        ink.snapTo(1f)
+                        if (enhanced) {
+                            sweep.snapTo(0f)
+                            sweep.animateTo(1f, BOOK_MARKER_SWEEP)
+                        } else {
+                            sweep.snapTo(1f)
+                        }
+                    }
+                }
+                is PressInteraction.Release, is PressInteraction.Cancel -> {
+                    val drawing = stroke
+                    val mine = generation
+                    launch {
+                        if (enhanced) drawing?.join()
+                        if (mine != generation) return@launch
+                        if (enhanced) ink.animateTo(0f, MotionTokens.fadeOut(0.002f)) else ink.snapTo(0f)
+                    }
+                }
+            }
+        }
+    }
+    return drawBehind {
+        val a = ink.value
+        val w = size.width * sweep.value
+        if (a <= 0.003f || w <= 0f) return@drawBehind
+        val top = size.height * BOOK_MARKER_TOP
+        val bottom = size.height * BOOK_MARKER_BOTTOM
+        drawRoundRect(
+            color = color.copy(alpha = color.alpha * a),
+            topLeft = Offset(0f, top),
+            size = Size(w, bottom - top),
+            cornerRadius = CornerRadius(BOOK_MARKER_CORNER.toPx()),
+        )
+    }
 }

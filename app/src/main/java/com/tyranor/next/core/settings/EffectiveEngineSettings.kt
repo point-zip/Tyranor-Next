@@ -204,6 +204,68 @@ object EffectiveEngineSettings {
     }
 
     /**
+     * MAGES.（impacto）宿主全局设置 + 单游戏覆盖合并：布尔字段 null 跟随全局；
+     * 日志等级经白名单校验，非法覆盖回退全局（全局也非法时回退默认 warning）。
+     */
+    fun mergeImpacto(
+        global: EngineSettingsStore.Impacto,
+        override: ImpactoOverride?,
+    ): EngineSettingsStore.Impacto {
+        if (override == null) return global
+        return global.copy(
+            swapConfirmCancel = resolveBool(override.swapConfirmCancel, global.swapConfirmCancel),
+            vsync = resolveBool(override.vsync, global.vsync),
+            videoPlayback = resolveBool(override.videoPlayback, global.videoPlayback),
+            subtitles = override.subtitles?.trim()?.lowercase(java.util.Locale.ROOT)
+                ?.takeIf { it in EngineSettingsStore.IMPACTO_SUBTITLES }
+                ?: EngineSettingsStore.normalizeImpactoSubtitles(global.subtitles),
+            closeBacklogAtEnd = resolveBool(override.closeBacklogAtEnd, global.closeBacklogAtEnd),
+            delusionMouse = resolveBool(override.delusionMouse, global.delusionMouse),
+            logLevel = override.logLevel?.trim()?.lowercase(java.util.Locale.ROOT)
+                ?.takeIf { it in EngineSettingsStore.IMPACTO_LOG_LEVELS }
+                ?: EngineSettingsStore.normalizeImpactoLogLevel(global.logLevel),
+            debugMode = resolveBool(override.debugMode, global.debugMode),
+        )
+    }
+
+    /**
+     * EasyRPG 外置宿主全局设置 + 单游戏覆盖合并：null 跟随全局；
+     * 字符串枚举经白名单校验、数值字段经闭区间校验，非法覆盖回退全局（全局也非法时回退默认）。
+     */
+    fun mergeEasyRpg(
+        global: EngineSettingsStore.EasyRpg,
+        override: EasyRpgOverride?,
+    ): EngineSettingsStore.EasyRpg {
+        if (override == null) return global
+        fun normalized(value: String?): String? = value?.trim()?.lowercase(java.util.Locale.ROOT)
+        return global.copy(
+            encoding = normalized(override.encoding)?.takeIf { it in EngineSettingsStore.EASYRPG_ENCODINGS }
+                ?: EngineSettingsStore.normalizeEasyRpgEncoding(global.encoding),
+            scaling = normalized(override.scaling)?.takeIf { it in EngineSettingsStore.EASYRPG_SCALINGS }
+                ?: EngineSettingsStore.normalizeEasyRpgScaling(global.scaling),
+            gameResolution = normalized(override.gameResolution)?.takeIf { it in EngineSettingsStore.EASYRPG_RESOLUTIONS }
+                ?: EngineSettingsStore.normalizeEasyRpgGameResolution(global.gameResolution),
+            stretch = resolveBool(override.stretch, global.stretch),
+            vsync = resolveBool(override.vsync, global.vsync),
+            fpsLimit = override.fpsLimit?.trim()?.toIntOrNull()
+                ?.takeIf { it in EngineSettingsStore.EASYRPG_FPS_LIMIT_RANGE }
+                ?: EngineSettingsStore.normalizeEasyRpgFpsLimit(global.fpsLimit),
+            showFps = resolveBool(override.showFps, global.showFps),
+            disableAudio = resolveBool(override.disableAudio, global.disableAudio),
+            musicVolume = override.musicVolume?.trim()?.toIntOrNull()
+                ?.takeIf { it in EngineSettingsStore.EASYRPG_VOLUME_RANGE }
+                ?: EngineSettingsStore.normalizeEasyRpgVolume(global.musicVolume),
+            soundVolume = override.soundVolume?.trim()?.toIntOrNull()
+                ?.takeIf { it in EngineSettingsStore.EASYRPG_VOLUME_RANGE }
+                ?: EngineSettingsStore.normalizeEasyRpgVolume(global.soundVolume),
+            noRtp = resolveBool(override.noRtp, global.noRtp),
+            patchMode = normalized(override.patchMode)?.takeIf { it in EngineSettingsStore.EASYRPG_PATCH_MODES }
+                ?: EngineSettingsStore.normalizeEasyRpgPatchMode(global.patchMode),
+            testPlay = resolveBool(override.testPlay, global.testPlay),
+        )
+    }
+
+    /**
      * Web 壳端口三级合并：单游戏覆盖值合法（1..65535）时优先，否则回退全局生效值。
      */
     fun resolveWebShellPort(override: String?, global: Int): Int =
@@ -312,6 +374,35 @@ data class RuffleOverride(
     val scaleMode: String? = null,
     val letterbox: String? = null,
     val loadBehavior: String? = null,
+)
+
+/** MAGES.（impacto）宿主单游戏覆盖字段（null = 跟随全局）。 */
+data class ImpactoOverride(
+    val swapConfirmCancel: Boolean? = null,
+    val vsync: Boolean? = null,
+    val videoPlayback: Boolean? = null,
+    val subtitles: String? = null,
+    val closeBacklogAtEnd: Boolean? = null,
+    val delusionMouse: Boolean? = null,
+    val logLevel: String? = null,
+    val debugMode: Boolean? = null,
+)
+
+/** EasyRPG 外置宿主单游戏覆盖字段（null = 跟随全局；数值字段按字符串存储）。 */
+data class EasyRpgOverride(
+    val encoding: String? = null,
+    val scaling: String? = null,
+    val gameResolution: String? = null,
+    val stretch: Boolean? = null,
+    val vsync: Boolean? = null,
+    val fpsLimit: String? = null,
+    val showFps: Boolean? = null,
+    val disableAudio: Boolean? = null,
+    val musicVolume: String? = null,
+    val soundVolume: String? = null,
+    val noRtp: Boolean? = null,
+    val patchMode: String? = null,
+    val testPlay: Boolean? = null,
 )
 
 /** ONS 单游戏覆盖字段（null = 跟随全局）。 */

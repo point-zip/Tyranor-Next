@@ -1,5 +1,24 @@
 # Third-party notices
 
+本文件记录代码/资产级第三方声明；引擎运行库与静态依赖的完整许可文本见 [README](README.md) 许可证表及各 `engine/*/licenses/` 目录。
+
+## FVP / rfvp
+
+随包的 `librfvp.so` 以 rfvp fork `1f0c279` 的干净源码构建，适用 MPL-2.0。[固定源码与校验值](engine/src/main/assets/licenses/fvp/upstream-source.txt) · [许可文本](engine/src/main/assets/licenses/fvp/MPL-2.0.txt)
+
+## Ethornell / BGI
+
+随包的 `libethornell.so` 以 ethornell-rs 为基础构建。源码基线、本地补丁及新增 MP4 解码依赖的许可见 [随包归属声明](engine/src/main/assets/licenses/ethornell/upstream-source.txt)。
+
+## libjpeg-turbo（IJG / BSD-3-Clause）
+
+System4 运行时内的 JPEG 编解码使用 libjpeg-turbo（IJG 许可 + Modified BSD 许可）。按 IJG 许可的分发条件，产品文档须包含以下声明：
+
+> This software is based in part on the work of the Independent JPEG Group.
+
+- IJG README（分发时必须原样保留）：[engine/xsystem4/licenses/README.ijg](engine/xsystem4/licenses/README.ijg)
+- 上游许可说明与 Modified (3-clause) BSD 文本：[engine/xsystem4/licenses/libjpeg-turbo-LICENSE.md](engine/xsystem4/licenses/libjpeg-turbo-LICENSE.md)
+
 ## mochi-compose (MochiToast)
 
 The in-app notice capsule (`app/src/main/java/com/tyranor/next/ui/common/notice/NoticeHost.kt`) follows the

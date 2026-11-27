@@ -1,5 +1,11 @@
 package com.tyranor.next.ui.common.motion
 
+import android.app.Activity
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.View
 import android.view.Window
 import android.view.WindowManager
@@ -19,7 +25,12 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.BlendMode
@@ -30,10 +41,13 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawOutline
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
+import com.tyranor.next.ui.common.privacy.SecureWindowEffect
+import kotlinx.coroutines.CancellationException
 import java.util.IdentityHashMap
 import kotlin.math.roundToInt
 
@@ -45,27 +59,175 @@ internal fun DialogWindowScrim(
     onWindow: (Window?) -> Unit,
     onDismissRequest: () -> Unit,
     dismissEnabled: Boolean = true,
+    /** 手指在弹窗窗口任意位置完成一次点击（未移动、未长按、单指）时的按下位置（弹窗根坐标）；不消费事件。退场期间据此把这次点击转交给下层页面。 */
+    onScrimTap: ((Offset) -> Unit)? = null,
+    /** 为 true 时整个遮罩由窗口自己绘制，不启用平台 `FLAG_DIM_BEHIND`（供退场即放行触摸的弹窗使用）。 */
+    drawnOnly: Boolean = false,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val window = syncDialogWindow(
         baseDimOverride = if (enhanced) DIALOG_SCRIM_ALPHA else null,
         scrimAlpha = if (enhanced) 0f else DIALOG_SCRIM_ALPHA,
+        drawnOnly = drawnOnly,
         dimProgress = progress,
     )
     SideEffect { onWindow(window) }
+    // 回调每次重组都是新的 lambda：用 rememberUpdatedState 读最新值，手势协程不随重组重启（否则退场开始引起的重组会打断正在进行的手势）
+    val latestScrimTap by rememberUpdatedState(onScrimTap)
+    val hasScrimTap = onScrimTap != null
+    val viewConfiguration = LocalViewConfiguration.current
+    val tapSlop = viewConfiguration.touchSlop
+    val longPressMillis = viewConfiguration.longPressTimeoutMillis
     val scrim = Modifier.drawBehind {
         val alpha = window.dialogScrimAlpha()
         if (alpha > 0f) drawRect(Color.Black.copy(alpha = alpha))
     }
     Box(
-        Modifier.fillMaxSize().then(scrim).clickable(
-            enabled = dismissEnabled,
-            interactionSource = remember { MutableInteractionSource() },
-            indication = null,
-            onClick = onDismissRequest,
-        ),
+        Modifier.fillMaxSize().then(scrim)
+            .clickable(
+                enabled = dismissEnabled,
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onDismissRequest,
+            )
+            // Initial 阶段观察所有按下（含落在卡片上的）：退场刚开始的前几帧卡片还盖在原处，用户重新点下层控件的位置
+            // 往往正好落在这张卡片上，卡片会把按下消费掉——只看遮罩区域就漏了这一类点击。只观察，不消费。
+            .then(
+                if (!hasScrimTap) Modifier else Modifier.pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        val tracker = ExitScrimTapTracker(
+                            downPosition = down.position,
+                            downUptimeMillis = down.uptimeMillis,
+                            tapSlopPx = tapSlop,
+                            longPressMillis = longPressMillis,
+                        )
+                        var cancelled = false
+                        try {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val change = event.changes.firstOrNull { it.id == down.id }
+                                val keepGoing = tracker.onPointerEvent(
+                                    pointerCount = event.changes.size,
+                                    targetPosition = change?.position,
+                                    targetPressed = change?.pressed == true,
+                                    eventUptimeMillis = change?.uptimeMillis ?: down.uptimeMillis,
+                                    // 窗口退场末段改成不拦触摸 / 被移除时，系统给这个手势发 ACTION_CANCEL，Compose 把它合成为一个
+                                    // 「pressed = false」的普通事件，这种合成事件没有对应的 MotionEvent；真实抬手一定带着 ACTION_UP。
+                                    genuineRelease = event.motionEvent?.actionMasked.let {
+                                        it == MotionEvent.ACTION_UP || it == MotionEvent.ACTION_POINTER_UP
+                                    },
+                                )
+                                if (!keepGoing) break
+                            }
+                        } catch (error: CancellationException) {
+                            cancelled = true
+                            throw error
+                        } finally {
+                            if (tracker.shouldReplayTap(cancelled = cancelled)) {
+                                latestScrimTap?.invoke(down.position)
+                            }
+                        }
+                    }
+                },
+            ),
         content = content,
     )
+}
+
+/**
+ * 弹窗退场期间遮罩手势判定器：只有「单指、位移未超容差、未超时长按且真实抬手（ACTION_UP）」才视为可补发的单击。
+ * 手指尚按住时窗口移除（手势被取消）不得补发单击，防止把退场尾段或收起刚结束时的再次长按误判为单击。
+ */
+internal class ExitScrimTapTracker(
+    private val downPosition: Offset,
+    private val downUptimeMillis: Long,
+    private val tapSlopPx: Float,
+    private val longPressMillis: Long,
+) {
+    private var possibleTap = true
+    private var lifted = false
+
+    fun onPointerEvent(
+        pointerCount: Int,
+        targetPosition: Offset?,
+        targetPressed: Boolean,
+        eventUptimeMillis: Long,
+        /** 这次「没有按下」是真实的手指抬起（ACTION_UP）；false 表示是系统取消手势后合成出来的，不能当成抬手。 */
+        genuineRelease: Boolean,
+    ): Boolean {
+        if (targetPosition == null) {
+            possibleTap = false
+            return false
+        }
+        if (pointerCount > 1) possibleTap = false
+        if ((targetPosition - downPosition).getDistance() > tapSlopPx) possibleTap = false
+        if (eventUptimeMillis - downUptimeMillis > longPressMillis) possibleTap = false
+        if (!targetPressed) {
+            if (genuineRelease) lifted = true else possibleTap = false
+            return false
+        }
+        return true
+    }
+
+    fun shouldReplayTap(cancelled: Boolean): Boolean = !cancelled && lifted && possibleTap
+}
+
+/**
+ * 弹窗退场期间落在遮罩上的点击，退场结束、窗口移除之后补发给 Activity。
+ *
+ * 为什么：弹窗的关闭回调要等退场动画（约 0.25s）放完才交付给调用方；这段时间里窗口若放行触摸，用户点下层页面上的
+ * 控件（比如刚才打开这个弹窗的那一行）只会让控件把「显示弹窗」置为 true——它此刻本来就是 true，没有任何变化——
+ * 随后退场结束，关闭回调又把它置回 false，弹窗再也出不来，只剩按压动效。所以退场期间窗口接住触摸，
+ * 这次点击改为「立刻收尾 → 弹窗移除 → 在同一个位置补发一次点击」，行为等同于用户在弹窗消失之后才点下去。
+ */
+internal object ExitTapReplay {
+    private val handler = Handler(Looper.getMainLooper())
+
+    fun replay(activity: Activity, screenX: Float, screenY: Float) {
+        // 等 2~3 帧：关闭回调交付后调用方在下一帧重组并移除弹窗窗口，补发的点击才落得到下层页面
+        handler.postDelayed({
+            if (activity.isFinishing || activity.isDestroyed) return@postDelayed
+            // 同一 Activity 上还有别的弹窗窗口（叠层弹窗：上层关闭时下层仍在）：补发会绕过它直接点到页面上，丢弃这次点击
+            if (DialogWindowDims.hasWindows(activity)) return@postDelayed
+            val origin = IntArray(2)
+            activity.window.decorView.getLocationOnScreen(origin)
+            val x = screenX - origin[0]
+            val y = screenY - origin[1]
+            val down = SystemClock.uptimeMillis()
+            dispatch(activity, down, down, MotionEvent.ACTION_DOWN, x, y)
+            handler.postDelayed({
+                if (activity.isDestroyed) return@postDelayed
+                val up = SystemClock.uptimeMillis()
+                dispatch(activity, down, up, MotionEvent.ACTION_UP, x, y)
+            }, TAP_HOLD_MILLIS)
+        }, REPLAY_DELAY_MILLIS)
+    }
+
+    private fun dispatch(activity: Activity, downTime: Long, eventTime: Long, action: Int, x: Float, y: Float) {
+        val properties = arrayOf(MotionEvent.PointerProperties().apply {
+            id = 0
+            toolType = MotionEvent.TOOL_TYPE_FINGER
+        })
+        val coords = arrayOf(MotionEvent.PointerCoords().apply {
+            this.x = x
+            this.y = y
+            pressure = 1f
+            size = 1f
+        })
+        val event = MotionEvent.obtain(
+            downTime, eventTime, action, 1, properties, coords,
+            0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0,
+        )
+        try {
+            activity.dispatchTouchEvent(event)
+        } finally {
+            event.recycle()
+        }
+    }
+
+    private const val REPLAY_DELAY_MILLIS = 50L
+    private const val TAP_HOLD_MILLIS = 40L
 }
 
 private const val DIALOG_SCRIM_ALPHA = 0.5f
@@ -90,37 +252,65 @@ fun syncDialogWindow(
     baseDimOverride: Float? = null,
     /** 本窗口自绘遮罩的完整暗度；共享协调器只让它补足下层缺少的部分，避免叠层加深。 */
     scrimAlpha: Float = 0f,
+    /**
+     * 整个遮罩都由窗口自己画，不用系统的窗口 dim：窗口自带的暗度（或 [baseDimOverride]）并入 [scrimAlpha] 一起画出来，总暗度不变。
+     * 系统的 dim 是系统层的一块「暗层」，窗口退场期间它还在，系统会按「被别的来源的半透明层盖住」把落在下面页面上的触摸整次丢掉；
+     * 需要在退场期间让下面的页面马上接得住手指的窗口（翻开的书）用它。
+     */
+    drawnOnly: Boolean = false,
     dimProgress: () -> Float,
 ): Window? {
     val view = LocalView.current
     val window = (view.parent as? DialogWindowProvider)?.window
+    // 独立窗口不继承 Activity 的 FLAG_SECURE：安全屏幕 / 应用锁生效时在此统一同步，
+    // 覆盖所有经本入口的弹窗、侧栏、抽屉与游戏浮层。
+    SecureWindowEffect(window)
     val owner = remember(window) { PageTransitions.findActivity(view.context) ?: window }
     val originalAnimations = remember(window) { window?.attributes?.windowAnimations ?: 0 }
     val themeDim = remember(window) { window?.attributes?.dimAmount ?: 0f }
     val hasThemeDim = remember(window) { (window?.attributes?.flags ?: 0) and WindowManager.LayoutParams.FLAG_DIM_BEHIND != 0 }
-    val baseDim = baseDimOverride ?: themeDim
     val progress = rememberUpdatedState(dimProgress)
-    val dimEnabled = hasThemeDim || baseDimOverride != null
+    val nativeEnabled = hasThemeDim || baseDimOverride != null
+    val nativeBase = baseDimOverride ?: themeDim
+    // drawnOnly：原生 dim 并入自绘遮罩（两层叠加的合成暗度），原生这一层关掉
+    val baseDim = if (drawnOnly) 0f else nativeBase
+    val dimEnabled = nativeEnabled && !drawnOnly
+    val foldedNative = if (drawnOnly && nativeEnabled) nativeBase else 0f
+    val drawnScrim = drawnDialogScrim(foldedNative, scrimAlpha, 1f)
+    fun dimAt(amount: Float) = quantizedDim(baseDim, amount)
+    fun scrimAt(amount: Float) = drawnDialogScrim(foldedNative, scrimAlpha, amount)
     val animations = if (preserveWindowAnimations) originalAnimations else 0
     DisposableEffect(window, owner) {
         val binding = if (window != null && owner != null) {
-            DialogWindowDims.bind(owner, window, quantizedDim(baseDim, progress.value()), dimEnabled, animations,
-                baseDim, quantizedDim(scrimAlpha, progress.value()), scrimAlpha)
+            val amount = progress.value()
+            DialogWindowDims.bind(owner, window, dimAt(amount), dimEnabled, animations, baseDim, scrimAt(amount), drawnScrim)
         } else null
         onDispose { binding?.dispose() }
     }
     SideEffect {
-        if (window != null) DialogWindowDims.update(window, quantizedDim(baseDim, progress.value()), dimEnabled, animations,
-            baseDim, quantizedDim(scrimAlpha, progress.value()), scrimAlpha)
+        if (window != null) {
+            val amount = progress.value()
+            DialogWindowDims.update(window, dimAt(amount), dimEnabled, animations, baseDim, scrimAt(amount), drawnScrim)
+        }
     }
-    LaunchedEffect(window, baseDim, dimEnabled, animations, scrimAlpha) {
+    LaunchedEffect(window, baseDim, dimEnabled, animations, foldedNative, scrimAlpha) {
         if (window == null) return@LaunchedEffect
         // 暗度只有 8 位精度：弹簧尾段肉眼不可辨的微小变化不再触发一次窗口布局与 WMS 调用；两端仍精确落到 0 与 baseDim
-        snapshotFlow { quantizedDim(baseDim, progress.value()) to quantizedDim(scrimAlpha, progress.value()) }.collect { (dim, scrim) ->
-            DialogWindowDims.update(window, dim, dimEnabled, animations, baseDim, scrim, scrimAlpha)
+        snapshotFlow {
+            val amount = progress.value()
+            dimAt(amount) to scrimAt(amount)
+        }.collect { (dim, scrim) ->
+            DialogWindowDims.update(window, dim, dimEnabled, animations, baseDim, scrim, drawnScrim)
         }
     }
     return window
+}
+
+internal fun drawnDialogScrim(nativeBase: Float, scrimBase: Float, progress: Float): Float {
+    if (nativeBase == 0f) return quantizedDim(scrimBase, progress)
+    val native = quantizedDim(nativeBase.coerceIn(0f, 1f), progress)
+    val drawn = quantizedDim(scrimBase.coerceIn(0f, 1f), progress)
+    return 1f - (1f - native) * (1f - drawn)
 }
 
 private fun quantizedDim(baseDim: Float, progress: Float): Float {
@@ -175,7 +365,12 @@ private object DialogWindowDims {
         else binding.release()
     }
 
+    /** [owner]（Activity）名下是否还有已挂载的弹窗窗口。 */
+    fun hasWindows(owner: Any): Boolean = bindings.values.any { it.owner === owner && it.window.decorView.isAttachedToWindow }
+
     fun beginExit(window: Window) { bindings[window]?.beginExit() }
+
+    fun markExiting(window: Window) { bindings[window]?.markExiting() }
 
     fun restore(window: Window) { bindings[window]?.restore() }
 
@@ -184,8 +379,8 @@ private object DialogWindowDims {
     fun panelDimAlpha(window: Window?): Float = bindings[window]?.appliedPanelDim ?: 0f
 
     class Binding(
-        private val owner: Any,
-        private val window: Window,
+        val owner: Any,
+        val window: Window,
         var dim: Float,
         var enabled: Boolean,
         var animations: Int,
@@ -199,6 +394,7 @@ private object DialogWindowDims {
         }
         private var disposed = false
         private var released = false
+        private var exiting = false
         var registered = false
             private set
         var appliedScrim by mutableFloatStateOf(0f)
@@ -223,10 +419,16 @@ private object DialogWindowDims {
             registered = true
             // Commit the inherited floor before this Window can replace the parent's dim in WMS.
             stack.register(owner, window, dim, enabled, baseDim, scrim, baseScrim, released)
+            if (exiting && !released) stack.markExiting(window)
         }
 
         fun beginExit() {
             if (registered && stack.beginExit(window)) released = true
+        }
+
+        fun markExiting() {
+            exiting = true
+            if (registered) stack.markExiting(window)
         }
 
         fun release() {
@@ -236,6 +438,7 @@ private object DialogWindowDims {
 
         fun restore() {
             released = false
+            exiting = false
             if (registered) stack.restore(window)
         }
 
@@ -299,6 +502,11 @@ internal fun Window?.beginDialogDimExit() {
     if (this != null) DialogWindowDims.beginExit(this)
 }
 
+/** 退场一开始即放行触摸的弹窗：交出叠层/底色资格，单窗口时自身遮罩仍随退场渐隐。 */
+internal fun Window?.markDialogDimExiting() {
+    if (this != null) DialogWindowDims.markExiting(this)
+}
+
 /** Explicit reopening only; resource cleanup must leave a closing window released. */
 internal fun Window?.restoreDialogDim() {
     if (this != null) DialogWindowDims.restore(this)
@@ -338,6 +546,19 @@ fun Window?.passThroughTouches() {
     if (this == null) return
     addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
     beginDialogDimExit()
+}
+
+/**
+ * 只让触摸穿过去（不动遮罩、不交焦点）：窗口还在放退场动画、要继续画着，但下层页面此刻就该接得住手指。
+ * 想反悔（退场途中又要重新打开）时用 [restoreTouches] 收回。
+ */
+fun Window?.passTouchesThrough() {
+    this?.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+}
+
+/** 收回 [passTouchesThrough]：窗口重新接手触摸。 */
+fun Window?.restoreTouches() {
+    this?.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
 }
 
 /**

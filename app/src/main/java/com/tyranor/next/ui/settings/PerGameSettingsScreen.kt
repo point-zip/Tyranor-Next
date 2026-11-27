@@ -34,11 +34,13 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -64,6 +66,10 @@ import com.tyranor.next.core.input.InputRemapRepository
 import com.tyranor.next.core.settings.EngineSettingsStore
 import com.tyranor.next.core.settings.EffectiveEngineSettings
 import com.tyranor.next.core.settings.PerGameSettingsStore
+import com.tyranor.next.core.settings.ShiinaRioSettings
+import com.tyranor.next.core.game.scan.ImpactoGameCatalog
+import com.tyranor.next.core.settings.EasyRpgOverride
+import com.tyranor.next.core.settings.ImpactoOverride
 import com.tyranor.next.core.settings.RenPyOverride
 import com.tyranor.next.core.settings.RpgMakerOverride
 import com.tyranor.next.core.settings.RuffleOverride
@@ -72,6 +78,7 @@ import com.tyranor.next.theme.PageTextColor
 import com.tyranor.next.theme.MiuixSettingsTheme
 import com.tyranor.next.theme.NavWhite
 import com.tyranor.next.theme.DialogItemSurface
+import com.tyranor.next.theme.LocalAppDialogContent
 import com.tyranor.next.theme.glassBorder
 import com.tyranor.next.theme.AppComponentCornerRadius
 import com.tyranor.next.ui.save.description
@@ -85,6 +92,7 @@ import com.tyranor.next.ui.common.motion.startActivityWithPageTransition
 import com.tyranor.next.ui.common.AppSearchField
 import com.tyranor.next.ui.common.AppSecondaryTopBar
 import com.tyranor.next.ui.common.TopBarIcon
+import com.tyranor.next.ui.runtime.RuntimeModuleSettingsDialog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -92,6 +100,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.runInterruptible
 import org.json.JSONObject
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
+import top.yukonga.miuix.kmp.basic.CardDefaults as MiuixCardDefaults
 import top.yukonga.miuix.kmp.basic.Scaffold as MiuixScaffold
 import com.tyranor.next.ui.common.ArrowPreference
 import com.tyranor.next.ui.common.OverlayDropdownPreference
@@ -114,7 +123,69 @@ import com.tyranor.next.ui.common.notice.AppNotice
 @Composable
 fun PerGameSettingsScreen(game: ScanGame) {
     val ctx = LocalContext.current
+    PerGameSettingsView(
+        game = game,
+        inBook = false,
+        onOpenGlobalWinlator = {
+            startActivityWithPageTransition(
+                ctx,
+                EngineSettingsActivity.createIntent(ctx, EngineSettingsKind.WINLATOR),
+            )
+        },
+    )
+}
+
+/**
+ * 「游戏盒」翻开的书里的单游戏引擎设置：第三方运行时模块交由 [RuntimeModuleSettingsDialog]，
+ * 内置引擎展示 [PerGameSettingsView] 的书页模式；其中 Winlator 全局设置跳转会继续往后翻出一张书页，
+ * 保存后刷新上层的「跟随全局」摘要，全程停留在同一本书内。
+ */
+@Composable
+internal fun PerGameSettingsDialog(game: ScanGame, onDismiss: () -> Unit) {
+    if (game.engine == EngineType.RUNTIME_MODULE) {
+        RuntimeModuleSettingsDialog(game = game, onDismiss = onDismiss)
+        return
+    }
+    var showGlobalWinlator by rememberSaveable(game.uri) { mutableStateOf(false) }
+    var globalWinlatorRevision by remember { mutableIntStateOf(0) }
+    PerGameSettingsView(
+        game = game,
+        inBook = true,
+        externalGlobalRefresh = globalWinlatorRevision,
+        onDismiss = onDismiss,
+        onOpenGlobalWinlator = { showGlobalWinlator = true },
+    )
+    if (showGlobalWinlator) {
+        WinlatorGlobalSettingsDialog(
+            onDismiss = { showGlobalWinlator = false },
+            onSaved = { globalWinlatorRevision++ },
+        )
+    }
+}
+
+@Composable
+private fun PerGameSettingsView(
+    game: ScanGame,
+    inBook: Boolean,
+    externalGlobalRefresh: Int = 0,
+    onDismiss: () -> Unit = {},
+    onOpenGlobalWinlator: () -> Unit,
+) {
+    val ctx = LocalContext.current
     val gid = game.uri
+    val systemNnn = game.engine == EngineType.SYSTEMNNN
+    var systemNnnFullscreen by remember(gid, systemNnn) {
+        mutableStateOf(if (systemNnn) PerGameSettingsStore.getBool(ctx, gid, PerGameSettingsStore.F_SYSTEMNNN_FULLSCREEN) else null)
+    }
+    var systemNnnReadingSize by remember(gid, systemNnn) {
+        mutableStateOf(if (systemNnn) PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_SYSTEMNNN_READING_SIZE) else null)
+    }
+    var systemNnnExeAnalysis by remember(gid, systemNnn) {
+        mutableStateOf(if (systemNnn) PerGameSettingsStore.getBool(ctx, gid, PerGameSettingsStore.F_SYSTEMNNN_EXE_ANALYSIS) else null)
+    }
+    var systemNnnDebugMode by remember(gid, systemNnn) {
+        mutableStateOf(if (systemNnn) PerGameSettingsStore.getBool(ctx, gid, PerGameSettingsStore.F_SYSTEMNNN_DEBUG_MODE) else null)
+    }
     val graphicsFamily = game.engine.graphicsFamily()
     val globalGraphics = graphicsFamily?.let { EngineSettingsStore.getGraphicsSettings(ctx, it) }
     var graphicsOverride by remember(gid, graphicsFamily) {
@@ -141,7 +212,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
     var artSurfaceCache by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_ART_SURFACE_CACHE_SIZE)) }
     var artFontCache by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_ART_FONT_CACHE_SIZE)) }
     var artPowerSaving by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_ART_POWER_SAVING)) }
-    var renpyVersion by remember {
+    var renpyVersion by remember(gid) {
         mutableStateOf(
             EngineSettingsStore.normalizeRenpyVersion(
                 PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_RENPY_VERSION),
@@ -154,6 +225,9 @@ fun PerGameSettingsScreen(game: ScanGame) {
     var ethornellNls by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_ETHORNELL_NLS)) }
     var ethornellFont by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_ETHORNELL_FONT)) }
     var cmvsFont by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_CMVS_FONT)) }
+    var cmvsProfile by remember(gid) {
+        mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_CMVS_PROFILE))
+    }
     var fvpSystemFont by remember { mutableStateOf(PerGameSettingsStore.getBool(ctx, gid, PerGameSettingsStore.F_FVP_SYSTEM_FONT)) }
     var fvpTextHidpi by remember { mutableStateOf(PerGameSettingsStore.getBool(ctx, gid, PerGameSettingsStore.F_FVP_TEXT_HIDPI)) }
     var ppssppVersion by remember { mutableStateOf(PerGameSettingsStore.getStr(ctx, gid, PerGameSettingsStore.F_PPSSPP_VERSION)) }
@@ -197,6 +271,35 @@ fun PerGameSettingsScreen(game: ScanGame) {
         )
     }
     val ruffle = ruffleOverride ?: RuffleOverride()
+    var impactoOverride by remember(gid) {
+        mutableStateOf(
+            if (game.engine == EngineType.IMPACTO) {
+                PerGameSettingsStore.toImpactoOverride(PerGameSettingsStore.load(ctx, gid))
+            } else {
+                null
+            },
+        )
+    }
+    val impacto = impactoOverride ?: ImpactoOverride()
+    var easyRpgOverride by remember(gid) {
+        mutableStateOf(
+            if (game.engine == EngineType.EASYRPG) {
+                PerGameSettingsStore.toEasyRpgOverride(PerGameSettingsStore.load(ctx, gid))
+            } else {
+                null
+            },
+        )
+    }
+    val easyRpg = easyRpgOverride ?: EasyRpgOverride()
+    var shiinaRio by remember(gid, game.engine) {
+        mutableStateOf(
+            if (game.engine == EngineType.SHIINARIO) {
+                PerGameSettingsStore.toShiinaRioOverride(PerGameSettingsStore.load(ctx, gid))
+            } else {
+                ShiinaRioSettings()
+            },
+        )
+    }
 
     val onsOverride = remember { mutableStateOf(PerGameSettingsStore.loadOnsOverride(ctx, gid) ?: JSONObject()) }
     var onsScoped by remember { mutableStateOf(onsBool(onsOverride.value, "scopedsavedir")) }
@@ -207,7 +310,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
     var onsSharpVal by remember { mutableStateOf(onsStr(onsOverride.value, "sharpness_value", "2")) }
     var onsEnc by remember { mutableStateOf(onsStr(onsOverride.value, "encoding", "gbk")) }
 
-    var tyExternal by remember { mutableStateOf(PerGameSettingsStore.getBool(ctx, gid, "ty_external")) }
+    var tyExternal by remember { mutableStateOf(PerGameSettingsStore.getBool(ctx, gid, PerGameSettingsStore.F_TY_EXTERNAL)) }
     var tyScoped by remember { mutableStateOf(PerGameSettingsStore.getBool(ctx, gid, "ty_scoped")) }
     var rpgMakerMod by remember {
         mutableStateOf(
@@ -454,7 +557,9 @@ fun PerGameSettingsScreen(game: ScanGame) {
     val globalXs4Msgskip = EngineSettingsStore.getXs4MsgskipDelay(ctx)
     // 从「Winlator 全局设置」返回时重新读取：否则自定义模式的「跟随全局」摘要会停在进入前的旧值。
     var globalWinlatorRevision by remember { mutableIntStateOf(0) }
-    val globalWinlator = remember(globalWinlatorRevision) { EngineSettingsStore.loadWinlator(ctx) }
+    val globalWinlator = remember(globalWinlatorRevision, externalGlobalRefresh) {
+        EngineSettingsStore.loadWinlator(ctx)
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -488,6 +593,8 @@ fun PerGameSettingsScreen(game: ScanGame) {
     val winlatorBox64PresetMap = winlatorBox64PresetOptionsMap()
     val globalRenpy = remember { EngineSettingsStore.loadRenPy(ctx) }
     val globalRuffle = remember { EngineSettingsStore.loadRuffle(ctx) }
+    val globalImpacto = remember { EngineSettingsStore.loadImpacto(ctx) }
+    val globalEasyRpg = remember { EngineSettingsStore.loadEasyRpg(ctx) }
     val globalRpg = remember { EngineSettingsStore.loadRpgMaker(ctx) }
     val rpgWindowMap = rpgWindowSizeOptionsMap()
     val rpgSpeedUpMap = rpgSpeedUpOptionsMap()
@@ -524,6 +631,13 @@ fun PerGameSettingsScreen(game: ScanGame) {
     val ruffleScaleModeMap = ruffleScaleModeOptionsMap()
     val ruffleLoadBehaviorMap = ruffleLoadBehaviorOptionsMap()
     val ruffleScreenTimeoutMap = ruffleScreenTimeoutOptionsMap()
+    val impactoLogLevelMap = impactoLogLevelOptionsMap()
+    val impactoSubtitlesMap = impactoSubtitlesOptionsMap()
+    val easyRpgEncodingMap = easyRpgEncodingOptionsMap()
+    val easyRpgScalingMap = easyRpgScalingOptionsMap()
+    val easyRpgResolutionMap = easyRpgGameResolutionOptionsMap()
+    val easyRpgPatchModeMap = easyRpgPatchModeOptionsMap()
+    val easyRpgUnlimitedLabel = stringResource(R.string.engine_settings_easyrpg_fps_unlimited)
     val engineDefault = stringResource(R.string.engine_option_engine_default)
     val builtinFont = stringResource(R.string.engine_settings_builtin_font)
     val auto = stringResource(R.string.common_auto)
@@ -553,6 +667,16 @@ fun PerGameSettingsScreen(game: ScanGame) {
     val effRenderer = krRender[PerGameSettingsStore.F_RENDERER]!!.value ?: globalRenderer
 
     fun save() {
+        if (game.engine == EngineType.RENPY) {
+            PerGameSettingsStore.setRenPyOverrides(ctx, gid, renpyVersion, renpy)
+            return
+        }
+        if (systemNnn) {
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_SYSTEMNNN_FULLSCREEN, systemNnnFullscreen)
+            PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_SYSTEMNNN_READING_SIZE, systemNnnReadingSize)
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_SYSTEMNNN_EXE_ANALYSIS, systemNnnExeAnalysis)
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_SYSTEMNNN_DEBUG_MODE, systemNnnDebugMode)
+        }
         graphicsFamily?.let { PerGameSettingsStore.setGraphicsOverride(ctx, gid, it, graphicsOverride) }
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_ENGINE_VERSION, krVersion)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_ENGINE_KERNEL, krKernel)
@@ -580,13 +704,15 @@ fun PerGameSettingsScreen(game: ScanGame) {
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_ART_SURFACE_CACHE_SIZE, artSurfaceCache)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_ART_FONT_CACHE_SIZE, artFontCache)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_ART_POWER_SAVING, artPowerSaving)
-        PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_RENPY_VERSION, renpyVersion)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_SIGLUS_LANGUAGE, siglusLanguage)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_FB_NLS, fbNls)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_FVP_NLS, fvpNls)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_ETHORNELL_NLS, ethornellNls)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_ETHORNELL_FONT, ethornellFont)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_CMVS_FONT, cmvsFont)
+        if (game.engine == EngineType.CMVS) {
+            PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_CMVS_PROFILE, cmvsProfile)
+        }
         PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_FVP_SYSTEM_FONT, fvpSystemFont)
         PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_FVP_TEXT_HIDPI, fvpTextHidpi)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_PPSSPP_VERSION, ppssppVersion)
@@ -645,7 +771,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
         putIfNotNull(onsObj, "sharpness_value", onsSharpVal)
         putIfNotNull(onsObj, "encoding", onsEnc)
         PerGameSettingsStore.setOnsOverride(ctx, gid, onsObj)
-        PerGameSettingsStore.setBool(ctx, gid, "ty_external", tyExternal)
+        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_TY_EXTERNAL, tyExternal)
         PerGameSettingsStore.setBool(ctx, gid, "ty_scoped", tyScoped)
         PerGameSettingsStore.setBool(
             ctx,
@@ -693,15 +819,6 @@ fun PerGameSettingsScreen(game: ScanGame) {
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_RPG_WINDOW_SIZE, rpgm.windowSize)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_RPG_SPEED_UP, rpgm.speedUp)
         PerGameSettingsStore.setStr(ctx, gid, PerGameSettingsStore.F_RPG_FONT_SCALE, rpgm.fontScale)
-        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_CHEATS, renpy.cheats)
-        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_HW_VIDEO, renpy.hwVideo)
-        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_AUTOSAVE, renpy.autosave)
-        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_PHONE_SMALL_VARIANT, renpy.phoneSmallVariant)
-        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_VSYNC, renpy.vsync)
-        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_LESS_MEMORY, renpy.lessMemory)
-        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_LESS_UPDATES, renpy.lessUpdates)
-        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_DONT_USE_GL2, renpy.dontUseGl2)
-        PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_RENPY_RECOMPILE, renpy.recompile)
         // Ruffle 覆盖只写 Ruffle 游戏：无条件写会把 ruffle_* 键塞进其它游戏的覆盖 blob。
         if (game.engine == EngineType.RUFFLE) {
             PerGameSettingsStore.setStr(
@@ -742,6 +859,84 @@ fun PerGameSettingsScreen(game: ScanGame) {
                 ruffle.loadBehavior?.takeIf { it in EngineSettingsStore.RUFFLE_LOAD_BEHAVIORS },
             )
         }
+        // MAGES. 覆盖同理只写 MAGES. 游戏，避免 impacto_* 键进入其它游戏的覆盖 blob。
+        if (game.engine == EngineType.IMPACTO) {
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_IMPACTO_SWAP_CONFIRM_CANCEL, impacto.swapConfirmCancel)
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_IMPACTO_VSYNC, impacto.vsync)
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_IMPACTO_VIDEO_PLAYBACK, impacto.videoPlayback)
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_IMPACTO_SUBTITLES,
+                impacto.subtitles?.takeIf { it in EngineSettingsStore.IMPACTO_SUBTITLES },
+            )
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_IMPACTO_CLOSE_BACKLOG_AT_END, impacto.closeBacklogAtEnd)
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_IMPACTO_DELUSION_MOUSE, impacto.delusionMouse)
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_IMPACTO_DEBUG_MODE, impacto.debugMode)
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_IMPACTO_LOG_LEVEL,
+                impacto.logLevel?.takeIf { it in EngineSettingsStore.IMPACTO_LOG_LEVELS },
+            )
+        }
+        if (game.engine == EngineType.SHIINARIO) {
+            PerGameSettingsStore.setShiinaRioOverride(ctx, gid, shiinaRio)
+        }
+        // EasyRPG 覆盖只写 EasyRPG 游戏，避免 easyrpg_* 键进入其它游戏的覆盖 blob。
+        if (game.engine == EngineType.EASYRPG) {
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_EASYRPG_ENCODING,
+                easyRpg.encoding?.takeIf { it in EngineSettingsStore.EASYRPG_ENCODINGS },
+            )
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_EASYRPG_SCALING,
+                easyRpg.scaling?.takeIf { it in EngineSettingsStore.EASYRPG_SCALINGS },
+            )
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_EASYRPG_GAME_RESOLUTION,
+                easyRpg.gameResolution?.takeIf { it in EngineSettingsStore.EASYRPG_RESOLUTIONS },
+            )
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_EASYRPG_STRETCH, easyRpg.stretch)
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_EASYRPG_VSYNC, easyRpg.vsync)
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_EASYRPG_FPS_LIMIT,
+                easyRpg.fpsLimit?.trim()?.toIntOrNull()
+                    ?.takeIf { it in EngineSettingsStore.EASYRPG_FPS_LIMIT_RANGE }?.toString(),
+            )
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_EASYRPG_SHOW_FPS, easyRpg.showFps)
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_EASYRPG_DISABLE_AUDIO, easyRpg.disableAudio)
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_EASYRPG_MUSIC_VOLUME,
+                easyRpg.musicVolume?.trim()?.toIntOrNull()
+                    ?.takeIf { it in EngineSettingsStore.EASYRPG_VOLUME_RANGE }?.toString(),
+            )
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_EASYRPG_SOUND_VOLUME,
+                easyRpg.soundVolume?.trim()?.toIntOrNull()
+                    ?.takeIf { it in EngineSettingsStore.EASYRPG_VOLUME_RANGE }?.toString(),
+            )
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_EASYRPG_NO_RTP, easyRpg.noRtp)
+            PerGameSettingsStore.setStr(
+                ctx,
+                gid,
+                PerGameSettingsStore.F_EASYRPG_PATCH_MODE,
+                easyRpg.patchMode?.takeIf { it in EngineSettingsStore.EASYRPG_PATCH_MODES },
+            )
+            PerGameSettingsStore.setBool(ctx, gid, PerGameSettingsStore.F_EASYRPG_TEST_PLAY, easyRpg.testPlay)
+        }
     }
 
     // 「增强」档才给列表项稳定 key 与增删 / 换位动画（条件卡片随内核、模式切换出现消失）；
@@ -750,59 +945,44 @@ fun PerGameSettingsScreen(game: ScanGame) {
     // 保存的落点反馈：每次保存 +1，顶栏保存图标「弹一下」
     var saveTick by remember { mutableIntStateOf(0) }
 
-    MiuixSettingsTheme {
-        MiuixScaffold(
-            modifier = Modifier.fillMaxSize().skipEntranceOnDrag(),
-            containerColor = ComposeColor.Transparent,
-            contentWindowInsets = WindowInsets(0.dp),
-            topBar = {
-                AppSecondaryTopBar(
-                    title = game.title,
-                    background = ComposeColor.Transparent,
-                    contentColor = PageTextColor,
-                    trailing = {
-                        // 外包一层只为挂「弹一下」：Box 贴合图标尺寸，排版与原样一致
-                        Box(Modifier.bounceOnChange(saveTick, depth = 0.1f)) {
-                        TopBarIcon(painterResource(R.drawable.ic_save), stringResource(R.string.common_save), MiuixTheme.colorScheme.primary) {
-                            save()
-                            saveTick++
-                            // 存档路径展示与实际生效设置同源：保存后按新值重解一次（磁盘 + DB 读，走 IO）。
-                            // KRKR 同样重解：解析失败提示（loadFailed）在用户改回设置并保存后应当立即
-                            // 解除，而不是滞留到重进页面（本地审计 84e1d22，P3-5 第三轮裁决）
-                            if (game.engine == EngineType.XSYS35 || game.engine == EngineType.XSYS4 || game.engine == EngineType.KIRIKIRI) {
-                                scope.launch {
-                                    try {
-                                        val loaded = withContext(Dispatchers.IO) {
-                                            GameSaveManager(ctx).resolveSaveLocation(game)
-                                        }
-                                        saveLocation = loaded
-                                        saveLocationLoadFailed = loaded.directory == null || !loaded.available
-                                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                                        throw cancelled
-                                    } catch (t: Throwable) {
-                                        // 对齐入口 (:256-257) 与 SaveManagementActivity.refresh
-                                        // 的兄弟模式：重解失败同样置失败态，不静默滞留旧快照
-                                        // （审计 of fe3d057, FA1）
-                                        saveLocationLoadFailed = true
-                                        Log.w("PerGameSettings", "resolve save location failed gid=$gid", t)
-                                    }
-                                }
-                            }
-                            AppNotice.makeText(ctx, perGameSettingsSavedMessage, android.widget.Toast.LENGTH_SHORT, AppNotice.Kind.Success).show()
-                        }
-                        }
-                    },
-                )
-            },
-        ) { innerPadding ->
-            LazyColumn(
-                // 顶栏透明：列表整体垫在顶栏下方（持久 padding），避免滚动时内容穿过顶栏
-                modifier = Modifier.fillMaxSize()
-                    .padding(horizontal = 12.dp)
-                    .padding(top = innerPadding.calculateTopPadding()),
-                contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
+    fun commitPerGameSettings() {
+        save()
+        saveTick++
+        // 存档路径展示与实际生效设置同源：保存后按新值重解一次（磁盘 + DB 读，走 IO）。
+        // KRKR 同样重解：解析失败提示（loadFailed）在用户改回设置并保存后应当立即
+        // 解除，而不是滞留到重进页面（本地审计 84e1d22，P3-5 第三轮裁决）
+        if (game.engine == EngineType.XSYS35 || game.engine == EngineType.XSYS4 || game.engine == EngineType.KIRIKIRI) {
+            scope.launch {
+                try {
+                    val loaded = withContext(Dispatchers.IO) {
+                        GameSaveManager(ctx).resolveSaveLocation(game)
+                    }
+                    saveLocation = loaded
+                    saveLocationLoadFailed = loaded.directory == null || !loaded.available
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (t: Throwable) {
+                    // 对齐入口 (:256-257) 与 SaveManagementActivity.refresh
+                    // 的兄弟模式：重解失败同样置失败态，不静默滞留旧快照
+                    // （审计 of fe3d057, FA1）
+                    saveLocationLoadFailed = true
+                    Log.w("PerGameSettings", "resolve save location failed gid=$gid", t)
+                }
+            }
+        }
+        AppNotice.makeText(ctx, perGameSettingsSavedMessage, android.widget.Toast.LENGTH_SHORT, AppNotice.Kind.Success).show()
+    }
+
+    @Composable
+    fun SettingsContent(
+        modifier: Modifier,
+        contentPadding: PaddingValues,
+    ) {
+        LazyColumn(
+            modifier = modifier,
+            contentPadding = contentPadding,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
                 when (game.engine) {
 	                    EngineType.KIRIKIRI -> {
                         // SD 卡镜像强制接管存档路径：独立存档开关不生效，置灰并显示引导；
@@ -937,20 +1117,22 @@ fun PerGameSettingsScreen(game: ScanGame) {
                         if (!isSdl3) {
                             item(key = if (motionEnhanced) "krFont" else null) {
                                 SectionCard(stringResource(R.string.engine_settings_font), modifier = listItemMotion(enabled = motionEnhanced)) {
-                                    // 「跟随全局」必须删除覆盖键（null），存 "" 会被引擎当作
-                                    // 显式内置字体覆盖，导致全局字体设置对该游戏永久失效
+                                    // 三态语义：「跟随全局」必须删除覆盖键（null）；「内置字体」
+                                    // 存空串（game scope 空 Item，仅该游戏回落内置）；「选择文件」
+                                    // 存导入后的真实路径
                                     val krFontValue = krFont?.ifEmpty { stringResource(R.string.engine_settings_builtin_font) }
                                         ?: stringResource(
                                             R.string.engine_settings_follow_global_font,
                                             globalKrFont.ifEmpty { stringResource(R.string.engine_settings_builtin_font) },
                                         )
-                                    // 值落定（跟随全局 ↔ 选中字体）时整行轻轻弹一下；Box 贴合行尺寸
+                                    // 值落定（跟随全局 ↔ 内置字体 ↔ 选中字体）时整行轻轻弹一下；Box 贴合行尺寸
                                     Box(Modifier.bounceOnChange(krFontValue, depth = ROW_SETTLE_DEPTH)) {
                                     FontPreference(
                                         label = stringResource(R.string.engine_settings_default_font),
                                         value = krFontValue,
                                         followLabel = stringResource(R.string.engine_settings_follow_global),
                                         onFollow = { krFont = null },
+                                        onBuiltIn = { krFont = "" },
                                         onPick = { fontLauncher.launch("*/*") },
                                         valueInSummary = true,
                                     )
@@ -1010,7 +1192,6 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                     title = stringResource(R.string.engine_settings_artemis_add_base_patch),
                                     summary = if (artPatchRunning) patchRunningSummary else stringResource(R.string.engine_settings_artemis_add_base_patch_summary),
                                     leadingIcon = R.drawable.ic_artemis_patch,
-                                    containerColor = NavWhite,
                                     verticalPadding = 17.dp,
                                     onClick = if (artPatchRunning) null else {
                                         {
@@ -1029,7 +1210,6 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                     title = stringResource(R.string.engine_settings_artemis_add_windows_env_patch),
                                     summary = if (artPatchRunning) patchRunningSummary else stringResource(R.string.engine_settings_artemis_add_windows_env_patch_summary),
                                     leadingIcon = R.drawable.ic_artemis_patch,
-                                    containerColor = NavWhite,
                                     verticalPadding = 17.dp,
                                     onClick = if (artPatchRunning) null else {
                                         {
@@ -1057,8 +1237,8 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             OverrideSwitch(stringResource(R.string.engine_settings_renpy_less_memory), globalRenpy.lessMemory, renpy.lessMemory) {
                                 renpyOverride = renpy.copy(lessMemory = it)
                             }
-                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_dont_use_gl2), !globalRenpy.dontUseGl2, renpy.dontUseGl2?.let { !it }) {
-                                renpyOverride = renpy.copy(dontUseGl2 = it?.let { v -> !v })
+                            OverrideSwitch(stringResource(R.string.engine_settings_renpy_dont_use_gl2), globalRenpy.dontUseGl2, renpy.dontUseGl2) {
+                                renpyOverride = renpy.copy(dontUseGl2 = it)
                             }
                             OverrideSwitch(stringResource(R.string.engine_settings_renpy_phone_small_variant), globalRenpy.phoneSmallVariant, renpy.phoneSmallVariant) {
                                 renpyOverride = renpy.copy(phoneSmallVariant = it)
@@ -1191,6 +1371,17 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     }
                     EngineType.CMVS -> item {
                         SectionCard("CMVS") {
+                            val profileIds = stringArrayResource(R.array.cmvs_profile_ids)
+                            val profileTitles = stringArrayResource(R.array.cmvs_profile_titles)
+                            val profileLabels = profileTitles.zip(profileIds) { title, id -> "$title ($id)" }
+                            OverlayDropdownPreference(
+                                title = stringResource(R.string.cmvs_profile_title),
+                                summary = stringResource(R.string.cmvs_profile_summary),
+                                items = listOf(stringResource(R.string.cmvs_profile_auto)) + profileLabels,
+                                selectedIndex = profileIds.indexOf(cmvsProfile) + 1,
+                                maxHeight = 360.dp,
+                                onSelectedIndexChange = { cmvsProfile = profileIds.getOrNull(it - 1) },
+                            )
                             OverrideFontPreference(
                                 label = stringResource(R.string.cmvs_font_title),
                                 globalValue = EngineSettingsStore.getCmvsFont(ctx),
@@ -1482,6 +1673,28 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     }
                     EngineType.SYSTEMNNN -> item(key = if (motionEnhanced) "systemNnn" else null) {
                         SectionCard(game.engine.displayName, modifier = listItemMotion(enabled = motionEnhanced)) {
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_systemnnn_fullscreen),
+                                EngineSettingsStore.isSystemNnnFullscreen(ctx),
+                                systemNnnFullscreen,
+                            ) { systemNnnFullscreen = it }
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_systemnnn_reading_size),
+                                systemNnnReadingSizeChoices().toMap(),
+                                EngineSettingsStore.getSystemNnnReadingSize(ctx).toString(),
+                                systemNnnReadingSize,
+                            ) { systemNnnReadingSize = it }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_systemnnn_exe_analysis),
+                                EngineSettingsStore.isSystemNnnExeAnalysisEnabled(ctx),
+                                systemNnnExeAnalysis,
+                            ) { systemNnnExeAnalysis = it }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_systemnnn_debug_mode),
+                                EngineSettingsStore.isSystemNnnDebugMode(ctx),
+                                systemNnnDebugMode,
+                            ) { systemNnnDebugMode = it }
+                            SystemNnnSaveLayoutSettings(game.uri)
                             Text(
                                 stringResource(R.string.engine_settings_systemnnn_hint),
                                 style = MaterialTheme.typography.bodyMedium,
@@ -1578,6 +1791,183 @@ fun PerGameSettingsScreen(game: ScanGame) {
                             )
                         }
                     }
+                    EngineType.IMPACTO -> item {
+                        SectionCard(game.engine.displayName) {
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_impacto_swap_confirm_cancel),
+                                globalImpacto.swapConfirmCancel,
+                                impacto.swapConfirmCancel,
+                            ) { impactoOverride = impacto.copy(swapConfirmCancel = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_impacto_vsync),
+                                globalImpacto.vsync,
+                                impacto.vsync,
+                            ) { impactoOverride = impacto.copy(vsync = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_impacto_video_playback),
+                                globalImpacto.videoPlayback,
+                                impacto.videoPlayback,
+                            ) { impactoOverride = impacto.copy(videoPlayback = it) }
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_impacto_subtitles),
+                                impactoSubtitlesMap,
+                                globalImpacto.subtitles,
+                                impacto.subtitles,
+                            ) { impactoOverride = impacto.copy(subtitles = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_impacto_close_backlog),
+                                globalImpacto.closeBacklogAtEnd,
+                                impacto.closeBacklogAtEnd,
+                            ) { impactoOverride = impacto.copy(closeBacklogAtEnd = it) }
+                            // 妄想触发的鼠标 / 触摸支持只存在于 Chaos;Head / Chaos;Child 两个 profile
+                            if (game.launchTarget in ImpactoGameCatalog.DELUSION_PROFILES) {
+                                OverrideSwitch(
+                                    stringResource(R.string.engine_settings_impacto_delusion_mouse),
+                                    globalImpacto.delusionMouse,
+                                    impacto.delusionMouse,
+                                ) { impactoOverride = impacto.copy(delusionMouse = it) }
+                            }
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_impacto_log_level),
+                                impactoLogLevelMap,
+                                globalImpacto.logLevel,
+                                impacto.logLevel,
+                            ) { impactoOverride = impacto.copy(logLevel = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_impacto_debug_mode),
+                                globalImpacto.debugMode,
+                                impacto.debugMode,
+                            ) { impactoOverride = impacto.copy(debugMode = it) }
+                            Text(
+                                stringResource(R.string.engine_settings_impacto_module_description),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                            )
+                        }
+                    }
+                    EngineType.SHIINARIO -> item {
+                        val global = remember { EngineSettingsStore.loadShiinaRio(ctx) }
+                        SectionCard(stringResource(R.string.engine_settings_shiinario_title)) {
+                            ShiinaRioSettingsRows(shiinaRio, global) { shiinaRio = it }
+                        }
+                    }
+                    EngineType.EASYRPG -> item {
+                        SectionCard(game.engine.displayName) {
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_easyrpg_scaling),
+                                easyRpgScalingMap,
+                                globalEasyRpg.scaling,
+                                easyRpg.scaling,
+                            ) { easyRpgOverride = easyRpg.copy(scaling = it) }
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_easyrpg_resolution),
+                                easyRpgResolutionMap,
+                                globalEasyRpg.gameResolution,
+                                easyRpg.gameResolution,
+                            ) { easyRpgOverride = easyRpg.copy(gameResolution = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_easyrpg_stretch),
+                                globalEasyRpg.stretch,
+                                easyRpg.stretch,
+                            ) { easyRpgOverride = easyRpg.copy(stretch = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_easyrpg_vsync),
+                                globalEasyRpg.vsync,
+                                easyRpg.vsync,
+                            ) { easyRpgOverride = easyRpg.copy(vsync = it) }
+                            OverrideText(
+                                label = stringResource(R.string.engine_settings_easyrpg_fps_limit),
+                                globalValue = if (globalEasyRpg.fpsLimit == 0) {
+                                    easyRpgUnlimitedLabel
+                                } else {
+                                    stringResource(R.string.engine_settings_easyrpg_fps_value, globalEasyRpg.fpsLimit)
+                                },
+                                override = easyRpg.fpsLimit,
+                                hint = stringResource(R.string.engine_settings_easyrpg_fps_limit_hint),
+                                sanitize = { it.filter(Char::isDigit).take(3) },
+                                allowEmpty = false,
+                                validate = {
+                                    it.toIntOrNull()?.let { value ->
+                                        value in EngineSettingsStore.EASYRPG_FPS_LIMIT_RANGE
+                                    } == true
+                                },
+                                keyboardType = KeyboardType.Number,
+                                summaryOverride = easyRpg.fpsLimit?.toIntOrNull()?.let { value ->
+                                    if (value == 0) easyRpgUnlimitedLabel
+                                    else stringResource(R.string.engine_settings_easyrpg_fps_value, value)
+                                },
+                            ) { easyRpgOverride = easyRpg.copy(fpsLimit = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_easyrpg_show_fps),
+                                globalEasyRpg.showFps,
+                                easyRpg.showFps,
+                            ) { easyRpgOverride = easyRpg.copy(showFps = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_easyrpg_disable_audio),
+                                globalEasyRpg.disableAudio,
+                                easyRpg.disableAudio,
+                            ) { easyRpgOverride = easyRpg.copy(disableAudio = it) }
+                            OverrideText(
+                                label = stringResource(R.string.engine_settings_easyrpg_music_volume),
+                                globalValue = "${globalEasyRpg.musicVolume}%",
+                                override = easyRpg.musicVolume,
+                                hint = stringResource(R.string.engine_settings_easyrpg_volume_hint),
+                                sanitize = { it.filter(Char::isDigit).take(3) },
+                                allowEmpty = false,
+                                validate = {
+                                    it.toIntOrNull()?.let { value ->
+                                        value in EngineSettingsStore.EASYRPG_VOLUME_RANGE
+                                    } == true
+                                },
+                                keyboardType = KeyboardType.Number,
+                                summaryOverride = easyRpg.musicVolume?.let { "$it%" },
+                            ) { easyRpgOverride = easyRpg.copy(musicVolume = it) }
+                            OverrideText(
+                                label = stringResource(R.string.engine_settings_easyrpg_sound_volume),
+                                globalValue = "${globalEasyRpg.soundVolume}%",
+                                override = easyRpg.soundVolume,
+                                hint = stringResource(R.string.engine_settings_easyrpg_volume_hint),
+                                sanitize = { it.filter(Char::isDigit).take(3) },
+                                allowEmpty = false,
+                                validate = {
+                                    it.toIntOrNull()?.let { value ->
+                                        value in EngineSettingsStore.EASYRPG_VOLUME_RANGE
+                                    } == true
+                                },
+                                keyboardType = KeyboardType.Number,
+                                summaryOverride = easyRpg.soundVolume?.let { "$it%" },
+                            ) { easyRpgOverride = easyRpg.copy(soundVolume = it) }
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_easyrpg_encoding),
+                                easyRpgEncodingMap,
+                                globalEasyRpg.encoding,
+                                easyRpg.encoding,
+                            ) { easyRpgOverride = easyRpg.copy(encoding = it) }
+                            OverrideChoice(
+                                stringResource(R.string.engine_settings_easyrpg_patch_mode),
+                                easyRpgPatchModeMap,
+                                globalEasyRpg.patchMode,
+                                easyRpg.patchMode,
+                            ) { easyRpgOverride = easyRpg.copy(patchMode = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_easyrpg_no_rtp),
+                                globalEasyRpg.noRtp,
+                                easyRpg.noRtp,
+                            ) { easyRpgOverride = easyRpg.copy(noRtp = it) }
+                            OverrideSwitch(
+                                stringResource(R.string.engine_settings_easyrpg_test_play),
+                                globalEasyRpg.testPlay,
+                                easyRpg.testPlay,
+                            ) { easyRpgOverride = easyRpg.copy(testPlay = it) }
+                            Text(
+                                stringResource(R.string.engine_settings_easyrpg_module_description),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                            )
+                        }
+                    }
                     EngineType.YURIS -> item {
                         SectionCard(game.engine.displayName) {
                             Text(
@@ -1658,12 +2048,7 @@ fun PerGameSettingsScreen(game: ScanGame) {
                                 summary = stringResource(R.string.engine_settings_winlator_global_entry_summary),
                                 // 已在 SectionCard（MiuixCard）内：卡内平面样式，避免卡片套卡片
                                 drawSurface = false,
-                                onClick = {
-                                    startActivityWithPageTransition(
-                                        ctx,
-                                        EngineSettingsActivity.createIntent(ctx, EngineSettingsKind.WINLATOR),
-                                    )
-                                },
+                                onClick = onOpenGlobalWinlator,
                             )
                         }
                     }
@@ -1754,9 +2139,71 @@ fun PerGameSettingsScreen(game: ScanGame) {
                     }
                 }
 
-                item(key = if (motionEnhanced) "bottomSpacer" else null) {
-                    Box(listItemMotion(enabled = motionEnhanced).fillMaxWidth().navigationBarsPadding().height(12.dp))
+                if (!inBook) {
+                    item(key = if (motionEnhanced) "bottomSpacer" else null) {
+                        Box(listItemMotion(enabled = motionEnhanced).fillMaxWidth().navigationBarsPadding().height(12.dp))
+                    }
                 }
+            }
+    }
+
+    if (inBook) {
+        AppAlertDialog(
+            onDismissRequest = onDismiss,
+            title = {
+                Text(
+                    stringResource(R.string.settings_engine_settings),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            },
+            text = {
+                MiuixSettingsTheme {
+                    SettingsContent(
+                        modifier = Modifier.fillMaxSize().skipEntranceOnDrag(),
+                        contentPadding = PaddingValues(bottom = 8.dp),
+                    )
+                }
+            },
+            buttonArrangement = Arrangement.SpaceBetween,
+            dismissButton = {
+                DialogTextButton(text = stringResource(R.string.common_close), onClick = onDismiss)
+            },
+            confirmButton = {
+                DialogTextButton(text = stringResource(R.string.common_save), onClick = ::commitPerGameSettings)
+            },
+        )
+    } else {
+        MiuixSettingsTheme {
+            MiuixScaffold(
+                modifier = Modifier.fillMaxSize().skipEntranceOnDrag(),
+                containerColor = ComposeColor.Transparent,
+                contentWindowInsets = WindowInsets(0.dp),
+                topBar = {
+                    AppSecondaryTopBar(
+                        title = game.title,
+                        background = ComposeColor.Transparent,
+                        contentColor = PageTextColor,
+                        trailing = {
+                            // 外包一层只为挂「弹一下」：Box 贴合图标尺寸，排版与原样一致
+                            Box(Modifier.bounceOnChange(saveTick, depth = 0.1f)) {
+                                TopBarIcon(
+                                    painterResource(R.drawable.ic_save),
+                                    stringResource(R.string.common_save),
+                                    MiuixTheme.colorScheme.primary,
+                                    onClick = ::commitPerGameSettings,
+                                )
+                            }
+                        },
+                    )
+                },
+            ) { innerPadding ->
+                // 顶栏透明：列表整体垫在顶栏下方（持久 padding），避免滚动时内容穿过顶栏
+                SettingsContent(
+                    modifier = Modifier.fillMaxSize()
+                        .padding(horizontal = 12.dp)
+                        .padding(top = innerPadding.calculateTopPadding()),
+                    contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
+                )
             }
         }
     }
@@ -1805,18 +2252,13 @@ private const val DIALOG_ITEM_STEP_MILLIS = 45L
 /** 为单游戏覆盖分组分配稳定入场次序，复用卡片材质并让组内按压统一作用于整张卡片。 */
 @Composable
 private fun SectionCard(title: String, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    // 入场次序：按首次组合顺序取号（超过 10 的由 staggeredEntrance 自行封顶）
+    // 入场次序：按首次组合顺序取号（超过 10 的由 staggeredEntrance 自行封顶）；书页内由 AppSectionCard 自动切为细墨线与衬线小标题
     val order = rememberEntranceOrder()
-    MiuixCard(
-        modifier = modifier.pressSquishGroup().staggeredEntrance(order).fillMaxWidth().glassBorder(),
-        cornerRadius = AppComponentCornerRadius,
+    com.tyranor.next.ui.common.AppSectionCard(
+        modifier = modifier.pressSquishGroup().staggeredEntrance(order),
+        title = title,
     ) {
-        Column(Modifier.padding(vertical = 6.dp)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
-            }
-            content()
-        }
+        content()
     }
 }
 
@@ -2012,7 +2454,6 @@ private fun OverrideFontPreference(
                         modifier = Modifier.staggeredEntrance(1, distance = DIALOG_ITEM_RISE, stepMillis = DIALOG_ITEM_STEP_MILLIS),
                         title = stringResource(R.string.engine_settings_follow_global_with_value, globalLabel),
                         leadingIcon = R.drawable.ic_font_bookmark,
-                        containerColor = DialogItemSurface,
                         indication = null,
                     ) {
                         onSet(null)
@@ -2022,7 +2463,6 @@ private fun OverrideFontPreference(
                         modifier = Modifier.staggeredEntrance(2, distance = DIALOG_ITEM_RISE, stepMillis = DIALOG_ITEM_STEP_MILLIS),
                         title = followGameDefaultLabel,
                         leadingIcon = R.drawable.ic_font_bookmark,
-                        containerColor = DialogItemSurface,
                         indication = null,
                     ) {
                         onSet("")
@@ -2032,7 +2472,6 @@ private fun OverrideFontPreference(
                         modifier = Modifier.staggeredEntrance(3, distance = DIALOG_ITEM_RISE, stepMillis = DIALOG_ITEM_STEP_MILLIS),
                         title = stringResource(R.string.engine_settings_select_font_file),
                         leadingIcon = R.drawable.ic_font_bookmark,
-                        containerColor = DialogItemSurface,
                         indication = null,
                     ) {
                         open = false

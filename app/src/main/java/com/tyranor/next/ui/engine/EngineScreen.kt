@@ -41,6 +41,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Help
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.runtime.Composable
@@ -66,6 +67,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
@@ -85,6 +87,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.tyranor.next.R
 import com.tyranor.next.core.engine.EngineType
 import com.tyranor.next.core.game.storage.GameLibraryFacade
@@ -92,6 +96,8 @@ import com.tyranor.next.core.engine.external.ExternalEmulatorLauncher
 import com.tyranor.next.core.engine.external.ExternalEmulatorRegistry
 import com.tyranor.next.core.engine.external.ExternalEngineLauncher
 import com.tyranor.next.core.engine.external.ExternalEngineModuleRegistry
+import com.tyranor.next.core.engine.external.ExternalEngineUpdate
+import com.tyranor.next.core.engine.external.ExternalEngineUpdateChecker
 import com.tyranor.next.core.game.launch.EngineLauncher
 import com.tyranor.next.core.settings.AppSettingsStore
 import com.tyranor.next.core.settings.EngineSettingsStore
@@ -103,6 +109,8 @@ import com.tyranor.next.theme.NavWhite
 import com.tyranor.next.theme.glassBorder
 import com.tyranor.next.theme.AppComponentShape
 import com.tyranor.next.ui.common.AppAlertDialog
+import com.tyranor.next.ui.common.LocalDialogBodyExit
+import com.tyranor.next.ui.common.LocalDialogExit
 import com.tyranor.next.ui.common.AppNavItem
 import com.tyranor.next.ui.common.AppTopBar
 import com.tyranor.next.ui.common.NoRippleButton
@@ -152,7 +160,8 @@ import com.tyranor.next.ui.common.notice.AppNotice
 fun EngineScreen(
     modifier: Modifier = Modifier,
     onCoachAnchorChanged: (Rect) -> Unit = {},
-    isActive: Boolean = true,
+    reportCoachAnchor: Boolean = true,
+    isSelected: Boolean = true,
     gameCount: Int = 0,
 ) {
     val latestOnCoachAnchorChanged = rememberUpdatedState(onCoachAnchorChanged)
@@ -164,6 +173,17 @@ fun EngineScreen(
     var externalModules by remember {
         mutableStateOf(readExternalModuleStatus(context))
     }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val moduleUpdates by produceState<Map<String, ExternalEngineUpdate>>(emptyMap(), isSelected, lifecycleOwner) {
+        if (isSelected) lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            value = buildMap {
+                for (module in ExternalEngineModuleRegistry.modules) {
+                    val update = ExternalEngineUpdateChecker.check(context, module) ?: continue
+                    put(module.id, update)
+                }
+            }
+        }
+    }
     var emulatorInstallStates by remember {
         mutableStateOf(refreshEmulatorInstallStates(context))
     }
@@ -171,6 +191,11 @@ fun EngineScreen(
     var moduleDialogEngine by rememberSaveable { mutableStateOf<EngineType?>(null) }
     // YU-RIS 等「引擎专属外置运行时」弹窗：只列该引擎的目标（如 Winlator），标题与内置版本弹窗同构
     var emulatorDialogEngine by rememberSaveable { mutableStateOf<EngineType?>(null) }
+    // 每次呼出弹窗都换一个编号。弹窗退场期间窗口已放行触摸，此时再点引擎会写入新的目标，
+    // 随后上一个弹窗退场结束才交付关闭回调：若回调无条件清空状态，新弹窗刚呼出就被吞掉（单点概率呼不出）。
+    // 关闭回调只清除自己那一次呼出，新呼出用 key(编号) 换成全新的弹窗实例。
+    var moduleDialogSeq by rememberSaveable { mutableIntStateOf(0) }
+    var emulatorDialogSeq by rememberSaveable { mutableIntStateOf(0) }
     // 内部存储读取是常数级开销，先同步显示；游戏目录大小在后台用批量查询补齐，
     // 避免首次进入时卡片长时间停在加载态。
     val internalStorage = remember { readInternalStorage() }
@@ -260,7 +285,8 @@ fun EngineScreen(
         // 每个分页各自的引擎列表（页面切换时新旧两页同时存在，所以按页取，不再共用一个）
         val enginesFor: (Int) -> List<EngineType> = { tab ->
             (if (categorizeEngines && tab >= 0) {
-                engines.filter { engineTabOf(it) == EngineTab.entries[tab] }
+                val targetTab = EngineTab.entries.getOrNull(tab)
+                if (targetTab != null) engines.filter { engineTabOf(it) == targetTab } else emptyList()
             } else {
                 engines
             }).distinctBy { engineDisplayName(it) }
@@ -338,6 +364,7 @@ fun EngineScreen(
                 }
                 val module = ExternalEngineModuleRegistry.resolveModule(engine, externalModules.renpyVersion)
                 val emulator = ExternalEmulatorRegistry.forEngine(engine)
+                val updateAvailable = module != null && module.id in moduleUpdates
                 val installed = when {
                     module != null -> externalModules.installed[module.id] == true
                     emulator != null -> {
@@ -352,8 +379,10 @@ fun EngineScreen(
                     else -> true
                 }
                 val statusRes = when {
+                    updateAvailable -> R.string.engine_module_update_available
                     module != null ->
                         if (installed) R.string.engine_module_installed
+                        else if (module.maximumVersionCode < Long.MAX_VALUE) R.string.engine_module_version_required
                         else if (module.minimumVersionCode > 0) R.string.engine_module_install_or_update
                         else R.string.engine_module_not_installed
 
@@ -365,7 +394,11 @@ fun EngineScreen(
                 EngineRow(
                     engine = engine,
                     statusTextRes = statusRes,
-                    installed = installed,
+                    status = when {
+                        updateAvailable -> EngineInstallStatus.UpdateAvailable
+                        installed -> EngineInstallStatus.Installed
+                        else -> EngineInstallStatus.Unavailable
+                    },
                     // 外置模块 / 外置模拟器 / Tyrano/WebOther/VN/Artemis（内置版本条目）：点击弹窗
                     enabled = module != null || emulator != null || engine in dialogOnlyEngines,
                     compact = engineColumns > 1,
@@ -373,7 +406,7 @@ fun EngineScreen(
                         .scrollJelly(scrollJellyState)
                         .staggeredEntrance(engineIndex + 1)
                         .coachAnchor(
-                            enabled = isCoachTarget && isActive && pageTab == activePageState.value,
+                            enabled = isCoachTarget && reportCoachAnchor && pageTab == activePageState.value,
                             onBounds = onCoachAnchorChanged,
                         )
                         .then(listItemMotion()),
@@ -381,8 +414,14 @@ fun EngineScreen(
                     onClick = {
                         when {
                             // 外置模拟器（PPSSPP / Eden / Winlator）：打开本引擎的运行时列表弹窗
-                            emulator != null -> emulatorDialogEngine = engine
-                            else -> moduleDialogEngine = engine
+                            emulator != null -> {
+                                emulatorDialogEngine = engine
+                                emulatorDialogSeq++
+                            }
+                            else -> {
+                                moduleDialogEngine = engine
+                                moduleDialogSeq++
+                            }
                         }
                     },
                 )
@@ -397,8 +436,13 @@ fun EngineScreen(
     // 版本模块列表弹窗：复用「加入群聊」弹窗的 AppNavItem 条目，展示该引擎各版本
     // 模块的安装状态；未安装的条目点击直达对应下载页。
     moduleDialogEngine?.let { dialogEngine ->
+        val seq = moduleDialogSeq
+        val closeDialog = { if (moduleDialogSeq == seq) moduleDialogEngine = null }
+        val module = ExternalEngineModuleRegistry.resolveModule(dialogEngine, externalModules.renpyVersion)
+        val update = module?.let { moduleUpdates[it.id] }
+        key(seq) {
         AppAlertDialog(
-            onDismissRequest = { moduleDialogEngine = null },
+            onDismissRequest = closeDialog,
             title = {
                 Text(
                     stringResource(R.string.engine_list_title, engineDisplayName(dialogEngine)),
@@ -415,38 +459,68 @@ fun EngineScreen(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    // 点条目 = 先让弹窗播完退场再执行动作；直接置空状态会把弹窗瞬间移出组合，退场动画一帧都来不及播
+                    val bodyExit = LocalDialogBodyExit.current
                     engineDialogEntries(context, externalModules.installed, dialogEngine).forEachIndexed { index, entry ->
+                        val entryUpdate = moduleUpdates[entry.id]
                         AppNavItem(
                             title = entry.title,
                             // 弹窗正文内的条目在正文升起后再逐条落位（只改图层，停稳即原样）
                             modifier = Modifier.dialogEntryEntrance(index),
-                            summary = stringResource(entry.summaryRes),
+                            summary = if (entryUpdate != null) {
+                                stringResource(R.string.engine_module_update_versions, entryUpdate.installedVersion, entryUpdate.latestVersion)
+                            } else stringResource(entry.summaryRes),
                             leadingIcon = R.drawable.ic_engine_chip,
                             containerColor = DialogItemSurface,
                         ) {
-                            if (!entry.installed && entry.installUrl != null) {
-                                val opened = ExternalEngineLauncher.openInstallPage(context, entry.installUrl)
-                                if (!opened) {
-                                    AppNotice.makeText(context, engineOpenDownloadFailedMessage, Toast.LENGTH_SHORT, AppNotice.Kind.Failure).show()
+                            val action = {
+                                if (!entry.installed && entry.installUrl != null) {
+                                    val opened = ExternalEngineLauncher.openInstallPage(context, entry.installUrl)
+                                    if (!opened) {
+                                        AppNotice.makeText(context, engineOpenDownloadFailedMessage, Toast.LENGTH_SHORT, AppNotice.Kind.Failure).show()
+                                    }
                                 }
+                                closeDialog()
                             }
-                            moduleDialogEngine = null
+                            if (bodyExit != null) bodyExit.closeThen(action) else action()
                         }
                     }
                 }
             },
-            // 底部主操作：进入该引擎族的全局引擎设置页（长按钮）
             confirmButton = {
-                EngineGlobalSettingsButton(engine = dialogEngine) { moduleDialogEngine = null }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (update != null) {
+                        val dialogExit = LocalDialogExit.current
+                        NoRippleButton(
+                            text = stringResource(R.string.engine_module_download_latest),
+                            modifier = Modifier.fillMaxWidth(),
+                            tonal = true,
+                            onClick = {
+                                val openReleases = {
+                                    if (!ExternalEngineLauncher.openInstallPage(context, update.releasesUrl)) {
+                                        AppNotice.makeText(context, engineOpenDownloadFailedMessage, Toast.LENGTH_SHORT, AppNotice.Kind.Failure).show()
+                                    }
+                                    closeDialog()
+                                }
+                                if (dialogExit != null) dialogExit.closeThen(openReleases) else openReleases()
+                            },
+                        )
+                    }
+                    EngineGlobalSettingsButton(engine = dialogEngine, onNavigate = closeDialog)
+                }
             },
         )
+        }
     }
 
     // Winlator 系引擎专属弹窗：只列该引擎的外置运行时（Winlator），未安装跳下载页、已安装打开主界面
     emulatorDialogEngine?.let { dialogEngine ->
         val entries = ExternalEmulatorRegistry.targets.filter { it.supports(dialogEngine) }
+        val seq = emulatorDialogSeq
+        val closeDialog = { if (emulatorDialogSeq == seq) emulatorDialogEngine = null }
+        key(seq) {
         AppAlertDialog(
-            onDismissRequest = { emulatorDialogEngine = null },
+            onDismissRequest = closeDialog,
             title = {
                 Text(
                     stringResource(R.string.engine_list_title, engineDisplayName(dialogEngine)),
@@ -462,6 +536,7 @@ fun EngineScreen(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    val bodyExit = LocalDialogBodyExit.current
                     entries.forEachIndexed { index, target ->
                         val installed = emulatorInstallStates[target.packageName] == true
                         AppNavItem(
@@ -473,21 +548,25 @@ fun EngineScreen(
                             leadingIcon = R.drawable.ic_engine_chip,
                             containerColor = DialogItemSurface,
                         ) {
-                            if (installed) {
-                                ExternalEmulatorLauncher.openHome(context, target)
-                            } else if (!ExternalEngineLauncher.openInstallPage(context, target.installUrl)) {
-                                AppNotice.makeText(context, engineOpenDownloadFailedMessage, Toast.LENGTH_SHORT, AppNotice.Kind.Failure).show()
+                            val action = {
+                                if (installed) {
+                                    ExternalEmulatorLauncher.openHome(context, target)
+                                } else if (!ExternalEngineLauncher.openInstallPage(context, target.installUrl)) {
+                                    AppNotice.makeText(context, engineOpenDownloadFailedMessage, Toast.LENGTH_SHORT, AppNotice.Kind.Failure).show()
+                                }
+                                closeDialog()
                             }
-                            emulatorDialogEngine = null
+                            if (bodyExit != null) bodyExit.closeThen(action) else action()
                         }
                     }
                 }
             },
             // 底部主操作：进入该引擎族的全局引擎设置页（长按钮）
             confirmButton = {
-                EngineGlobalSettingsButton(engine = dialogEngine) { emulatorDialogEngine = null }
+                EngineGlobalSettingsButton(engine = dialogEngine, onNavigate = closeDialog)
             },
         )
+        }
     }
 }
 
@@ -765,12 +844,14 @@ private fun treeSizeBytes(context: Context, treeUri: Uri): Long {
     return total
 }
 
+private enum class EngineInstallStatus { Installed, UpdateAvailable, Unavailable }
+
 /** Resolves an engine's icon and label, forwarding the caller's installation status and click behavior. */
 @Composable
 private fun EngineRow(
     engine: EngineType,
     @StringRes statusTextRes: Int,
-    installed: Boolean,
+    status: EngineInstallStatus,
     enabled: Boolean,
     compact: Boolean = false,
     modifier: Modifier = Modifier,
@@ -782,7 +863,7 @@ private fun EngineRow(
         iconRes = engineIconRes(engine),
         title = engineDisplayName(engine),
         statusTextRes = statusTextRes,
-        installed = installed,
+        status = status,
         enabled = enabled,
         compact = compact,
         showIcon = showIcon,
@@ -799,7 +880,7 @@ private fun EngineRowCard(
     @DrawableRes iconRes: Int,
     title: String,
     @StringRes statusTextRes: Int,
-    installed: Boolean,
+    status: EngineInstallStatus,
     enabled: Boolean,
     compact: Boolean,
     showIcon: Boolean,
@@ -868,18 +949,26 @@ private fun EngineRowCard(
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize(),
                         )
-                        // 默认主题保持原有的 NavWhite 色遮罩（44 → 47dp，再加长 3dp）
+                        // 默认主题保持原有的 NavWhite 色遮罩（44 → 47dp，再加长 3dp）。
+                        // 遮罩向右多画 2dp 纯 NavWhite 盖住图片右缘：滚动果冻让卡片带着缩放时，图片与遮罩的边缘
+                        // 各被抗锯齿一次，边缘像素会漏出约 c(1-c) 的图片底色，表现为图标与白区之间的一条细线；
+                        // 多出来的部分落在同色的卡片底上，静止外观不变。
                         Box(
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
                                 .fillMaxHeight()
                                 .width(fadeWidth)
-                                .background(
-                                    Brush.horizontalGradient(
-                                        0f to Color.Transparent,
-                                        1f to NavWhite,
-                                    ),
-                                ),
+                                .drawBehind {
+                                    drawRect(
+                                        brush = Brush.horizontalGradient(
+                                            0f to Color.Transparent,
+                                            1f to NavWhite,
+                                            startX = 0f,
+                                            endX = size.width,
+                                        ),
+                                        size = Size(size.width + 2.dp.toPx(), size.height),
+                                    )
+                                },
                         )
                     }
                 }
@@ -894,21 +983,25 @@ private fun EngineRowCard(
                     .padding(start = if (showIcon) 12.dp else 16.dp, end = 8.dp),
             )
             BlurCrossfade(
-                targetState = installed,
+                targetState = status,
                 modifier = Modifier
                     .padding(start = 8.dp, end = 16.dp)
                     // 安装状态变化时整个图标位弹一下（放在替换容器上，新旧图标都随之形变）
-                    .bounceOnChange(installed)
+                    .bounceOnChange(status)
                     .size(20.dp),
                 contentAlignment = Alignment.Center,
-            ) { isInstalled ->
+            ) { currentStatus ->
                 Icon(
-                    if (isInstalled) Icons.Filled.CheckCircle else Icons.Filled.Cancel,
+                    when (currentStatus) {
+                        EngineInstallStatus.Installed -> Icons.Filled.CheckCircle
+                        EngineInstallStatus.UpdateAvailable -> Icons.AutoMirrored.Filled.Help
+                        EngineInstallStatus.Unavailable -> Icons.Filled.Cancel
+                    },
                     contentDescription = stringResource(statusTextRes),
-                    tint = if (isInstalled) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.error
+                    tint = when (currentStatus) {
+                        EngineInstallStatus.Installed -> MaterialTheme.colorScheme.primary
+                        EngineInstallStatus.UpdateAvailable -> MaterialTheme.colorScheme.tertiary
+                        EngineInstallStatus.Unavailable -> MaterialTheme.colorScheme.error
                     },
                     modifier = Modifier.size(20.dp),
                 )
@@ -935,14 +1028,18 @@ private fun engineIconRes(engine: EngineType): Int = when (engine) {
     EngineType.FVP -> R.drawable.ic_engine_card_fvp
     EngineType.ETHORNELL -> R.drawable.ic_engine_card_ethornell
     EngineType.CMVS -> R.drawable.ic_engine_card_cmvs
+    EngineType.SYSTEMNNN -> R.drawable.ic_engine_card_systemnnn
     EngineType.RENPY -> R.drawable.ic_engine_card_renpy
     EngineType.RUFFLE -> R.drawable.ic_engine_card_ruffle
+    EngineType.IMPACTO -> R.drawable.ic_engine_card_impacto
+    EngineType.EASYRPG -> R.drawable.ic_engine_card_easyrpg
+    EngineType.SHIINARIO -> R.drawable.ic_engine_card_shiinario
     EngineType.YURIS -> R.drawable.ic_engine_card_yuris
     EngineType.CATSYSTEM2 -> R.drawable.ic_engine_card_catsystem2
     EngineType.PC -> R.drawable.ic_engine_card_pc
     EngineType.PSP -> R.drawable.ic_engine_card_psp
     EngineType.NINTENDO_SWITCH -> R.drawable.ic_engine_card_switch
-    EngineType.SYSTEMNNN, EngineType.ANDROID_APP, EngineType.RUNTIME_MODULE, EngineType.UNKNOWN -> R.drawable.ic_engine_icon
+    EngineType.ANDROID_APP, EngineType.RUNTIME_MODULE, EngineType.UNKNOWN -> R.drawable.ic_engine_icon
 }
 
 /** 引擎页顶部分页（顺序即展示顺序）：GAL / RPGM / 主机 / 网页。 */
@@ -1005,11 +1102,11 @@ internal fun EnginePageHost(
 private enum class EngineTab { GAL, RPGM, CONSOLE, WEB }
 
 private fun engineTabOf(engine: EngineType): EngineTab = when (engine) {
-    EngineType.RPGMAKER, EngineType.RPG_MV, EngineType.RPG_MZ -> EngineTab.RPGM
+    EngineType.RPGMAKER, EngineType.RPG_MV, EngineType.RPG_MZ, EngineType.EASYRPG -> EngineTab.RPGM
     EngineType.KIRIKIRI, EngineType.ONS, EngineType.ARTEMIS, EngineType.SIGLUS,
     EngineType.REALLIVE, EngineType.AVG32, EngineType.XSYS35, EngineType.XSYS4, EngineType.UK2, EngineType.FVP,
     EngineType.ETHORNELL, EngineType.CMVS, EngineType.SYSTEMNNN,
-    EngineType.RENPY, EngineType.YURIS, EngineType.CATSYSTEM2 -> EngineTab.GAL
+    EngineType.RENPY, EngineType.YURIS, EngineType.CATSYSTEM2, EngineType.IMPACTO, EngineType.SHIINARIO -> EngineTab.GAL
     // PC（手动添加，经 Winlator 运行）与主机模拟器同属「主机」分类
     EngineType.PSP, EngineType.NINTENDO_SWITCH, EngineType.PC -> EngineTab.CONSOLE
     // 手动添加的安卓应用不进入引擎页（supportedEngines 未收录），此处仅为 when 完备性
@@ -1046,7 +1143,7 @@ private val rpgMakerWebBuiltin = listOf(
 /** 各内置引擎的「版本条目」弹窗内容（条目顺序即展示顺序）。 */
 private val builtinDialogEntries: Map<EngineType, List<EngineDialogEntry>> = mapOf(
     EngineType.ETHORNELL to listOf(builtinEntry("internal.ethornell", "ethornell-rs / Android host ABI 1")),
-    EngineType.SYSTEMNNN to listOf(builtinEntry("internal.systemnnn", "SystemNNN-Emberfall 0.6.14")),
+    EngineType.SYSTEMNNN to listOf(builtinEntry("internal.systemnnn", "SystemNNN-Emberfall 0.8.1")),
     EngineType.TYRANO to tyranorWebBuiltin,
     EngineType.WEB_OTHER to tyranorWebBuiltin,
     EngineType.VN to tyranorWebBuiltin,
@@ -1072,7 +1169,7 @@ private val builtinDialogEntries: Map<EngineType, List<EngineDialogEntry>> = map
         builtinEntry("xsys35-2.20.0", "xsystem35-2.20.0"),
     ),
     EngineType.XSYS4 to listOf(
-        builtinEntry("xsys4-6a94a0c", "xsystem4-6a94a0c"),
+        builtinEntry("xsys4-46f7c25", "xsystem4-46f7c25"),
     ),
     EngineType.FVP to listOf(
         builtinEntry("fvp-rfvp", "rfvp-xmoezzz"),
@@ -1114,6 +1211,7 @@ private fun engineDialogEntries(
                 id = module.id,
                 title = module.displayName(context),
                 summaryRes = if (installed) R.string.engine_module_installed
+                    else if (module.maximumVersionCode < Long.MAX_VALUE) R.string.engine_module_version_required
                     else if (module.minimumVersionCode > 0) R.string.engine_module_install_or_update
                     else R.string.engine_module_not_installed,
                 installed = installed,

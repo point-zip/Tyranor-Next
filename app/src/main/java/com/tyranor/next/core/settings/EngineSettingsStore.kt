@@ -4,6 +4,7 @@ import android.content.Context
 import com.core.engine.EnginePrefs
 import com.core.engine.LaunchContract
 import com.tyranor.next.core.engine.external.WinlatorContract
+import com.tyranor.runtime.systemnnn.SystemNnnHost
 import org.json.JSONObject
 
 /**
@@ -75,6 +76,10 @@ object EngineSettingsStore {
 
     // CMVS（cmvs-rs）应用级字体；路径必须位于 App 私有 files/fonts/，face 为字体集合索引
     const val KEY_CMVS_FONT = "cmvs_font"
+    private const val KEY_SYSTEMNNN_FULLSCREEN = "systemnnn_fullscreen"
+    private const val KEY_SYSTEMNNN_READING_SIZE = "systemnnn_reading_size"
+    private const val KEY_SYSTEMNNN_EXE_ANALYSIS = "systemnnn_exe_analysis"
+    private const val KEY_SYSTEMNNN_DEBUG_MODE = "systemnnn_debug_mode"
     const val KEY_CMVS_FACE = "cmvs_font_face"
 
     // System35（xsystem35）应用级默认（独立存档 / 渲染后端 / 整数倍缩放 / 失焦静音）
@@ -121,6 +126,32 @@ object EngineSettingsStore {
     const val KEY_RUFFLE_SCALE_MODE = "ruffle_scale_mode"
     const val KEY_RUFFLE_LETTERBOX = "ruffle_letterbox"
     const val KEY_RUFFLE_LOAD_BEHAVIOR = "ruffle_load_behavior"
+    // MAGES.（impacto）外置宿主的 App prefs 键；与 PerGameSettingsStore.F_IMPACTO_*、
+    // GameOverridePartitions.KEY_IMPACTO_* 字面量锚定（由 ImpactoSettingsKeysTest 约束）
+    const val KEY_IMPACTO_SWAP_CONFIRM_CANCEL = "impacto_swap_confirm_cancel"
+    const val KEY_IMPACTO_VSYNC = "impacto_vsync"
+    const val KEY_IMPACTO_VIDEO_PLAYBACK = "impacto_video_playback"
+    const val KEY_IMPACTO_SUBTITLES = "impacto_subtitles"
+    const val KEY_IMPACTO_CLOSE_BACKLOG_AT_END = "impacto_close_backlog_at_end"
+    const val KEY_IMPACTO_DELUSION_MOUSE = "impacto_delusion_mouse"
+    const val KEY_IMPACTO_LOG_LEVEL = "impacto_log_level"
+    const val KEY_IMPACTO_DEBUG_MODE = "impacto_debug_mode"
+
+    // EasyRPG 外置宿主的 App prefs 键；与 PerGameSettingsStore.F_EASYRPG_*、
+    // GameOverridePartitions.KEY_EASYRPG_* 字面量锚定（由 EasyRpgSettingsKeysTest 约束）
+    const val KEY_EASYRPG_ENCODING = "easyrpg_encoding"
+    const val KEY_EASYRPG_SCALING = "easyrpg_scaling"
+    const val KEY_EASYRPG_GAME_RESOLUTION = "easyrpg_game_resolution"
+    const val KEY_EASYRPG_STRETCH = "easyrpg_stretch"
+    const val KEY_EASYRPG_VSYNC = "easyrpg_vsync"
+    const val KEY_EASYRPG_FPS_LIMIT = "easyrpg_fps_limit"
+    const val KEY_EASYRPG_SHOW_FPS = "easyrpg_show_fps"
+    const val KEY_EASYRPG_DISABLE_AUDIO = "easyrpg_disable_audio"
+    const val KEY_EASYRPG_MUSIC_VOLUME = "easyrpg_music_volume"
+    const val KEY_EASYRPG_SOUND_VOLUME = "easyrpg_sound_volume"
+    const val KEY_EASYRPG_NO_RTP = "easyrpg_no_rtp"
+    const val KEY_EASYRPG_PATCH_MODE = "easyrpg_patch_mode"
+    const val KEY_EASYRPG_TEST_PLAY = "easyrpg_test_play"
 
     // Tyrano 与 RPG Maker Web 共用同一套 WebView 宿主设置；启动链路按同一键读取。
     const val KEY_TYRANO_EXTERNAL_NETWORK = "tyrano_external_network"
@@ -278,12 +309,13 @@ object EngineSettingsStore {
     // Ren'Py 版本取值常量
     const val RENPY_AUTO = "auto"
     const val RENPY_85 = "8.5"
+    const val RENPY_850 = "8.5.0"
     const val RENPY_853 = "8.5.3"
     const val RENPY_77 = "7.7.1"
 
-    /** Migrates the former 8.5 selector value to the compatible upgraded 8.5.3 runtime. */
+    /** 历史 8.5 选择值对应原 8.5.0 模块，不自动升级到 8.5.3。 */
     fun normalizeRenpyVersion(value: String?): String? =
-        if (value?.trim() == RENPY_85) RENPY_853 else value
+        if (value?.trim() == RENPY_85) RENPY_850 else value
 
     // Ruffle 外置模块取值域（对齐插件 RuffleConfiguration 的默认值）
     const val RUFFLE_SCREEN_TIMEOUT_DEFAULT = 0
@@ -298,6 +330,36 @@ object EngineSettingsStore {
     val RUFFLE_SCALE_MODES: Set<String> = linkedSetOf("exactfit", "noborder", "noscale", RUFFLE_SCALE_MODE_SHOW_ALL)
     val RUFFLE_LETTERBOXES: Set<String> = linkedSetOf(RUFFLE_LETTERBOX_ON, "off")
     val RUFFLE_LOAD_BEHAVIORS: Set<String> = linkedSetOf(RUFFLE_LOAD_BEHAVIOR_STREAMING, "delayed", "blocking")
+
+    // MAGES.（impacto）日志等级取值域，对齐上游 LogLevel（off 为关闭；默认 warning）
+    const val IMPACTO_LOG_LEVEL_WARNING = "warning"
+    val IMPACTO_LOG_LEVELS: Set<String> =
+        linkedSetOf("off", "fatal", "error", IMPACTO_LOG_LEVEL_WARNING, "info", "debug", "trace")
+
+    // MAGES.（impacto）影片字幕轨：引擎配置里的 SubtitleConfig 是标志枚举，写成 "Karaoke|Translation" 这样的组合；
+    // “两个都关”没有引擎读得回的写法，所以只提供三档：全部 / 仅翻译 / 仅卡拉 OK。
+    const val IMPACTO_SUBTITLES_ALL = "all"
+    val IMPACTO_SUBTITLES: Set<String> = linkedSetOf(IMPACTO_SUBTITLES_ALL, "translation", "karaoke")
+
+    // EasyRPG 宿主设置取值域（与宿主 EasyRpgSettingsMapper 白名单严格同步）
+    const val EASYRPG_ENCODING_AUTO = "auto"
+    val EASYRPG_ENCODINGS: Set<String> =
+        linkedSetOf(EASYRPG_ENCODING_AUTO, "932", "936", "950", "949", "1252", "1251", "65001")
+
+    const val EASYRPG_SCALING_BILINEAR = "bilinear"
+    val EASYRPG_SCALINGS: Set<String> = linkedSetOf("nearest", "integer", EASYRPG_SCALING_BILINEAR)
+
+    const val EASYRPG_RESOLUTION_ORIGINAL = "original"
+    val EASYRPG_RESOLUTIONS: Set<String> = linkedSetOf(EASYRPG_RESOLUTION_ORIGINAL, "widescreen", "ultrawide")
+
+    const val EASYRPG_FPS_LIMIT_DEFAULT = 60
+    val EASYRPG_FPS_LIMIT_RANGE: IntRange = 0..240
+
+    const val EASYRPG_VOLUME_DEFAULT = 100
+    val EASYRPG_VOLUME_RANGE: IntRange = 0..100
+
+    const val EASYRPG_PATCH_MODE_AUTO = "auto"
+    val EASYRPG_PATCH_MODES: Set<String> = linkedSetOf(EASYRPG_PATCH_MODE_AUTO, "none", "easyrpg", "maniac", "dynrpg")
 
     // Siglus 语言取值常量（auto 不设置 SIGLUS_LANGUAGE，保持引擎默认 JP）
     const val SIGLUS_LANGUAGE_AUTO = "auto"
@@ -631,7 +693,8 @@ object EngineSettingsStore {
                 }
                 else -> rawValue
             }
-            json.put(pref.engineKey, JSONObject().put("v", value).put("s", if (sanitizedOverride != null) "game" else "global"))
+            json.put(pref.engineKey, JSONObject().put("v", value).put("s",
+                if (sanitizedOverride != null) LaunchContract.SCOPE_GAME else LaunchContract.SCOPE_GLOBAL))
         }
         return json.toString()
     }
@@ -744,6 +807,7 @@ object EngineSettingsStore {
     fun getRenpyVersion(c: Context): String {
         val v = prefs(c).getString(KEY_RENPY_ENGINE_VERSION, RENPY_AUTO)
         return when (normalizeRenpyVersion(v)?.trim()) {
+            RENPY_850 -> RENPY_850
             RENPY_853 -> RENPY_853
             RENPY_77 -> RENPY_77
             else -> RENPY_AUTO
@@ -819,6 +883,32 @@ object EngineSettingsStore {
     fun setFvpFont(c: Context, v: String?) =
         prefs(c).edit().putString(KEY_FVP_FONT, normalizeFvpFont(v)).apply()
     fun normalizeFvpFont(v: String?): String = v?.trim().orEmpty()
+
+    // ---------- SystemNNN ----------
+    val SYSTEMNNN_READING_SIZES: List<Int> = SystemNnnHost.READING_SIZES
+
+    fun isSystemNnnFullscreen(c: Context): Boolean =
+        prefs(c).getBoolean(KEY_SYSTEMNNN_FULLSCREEN, SystemNnnHost.DEFAULT_FULLSCREEN)
+
+    fun getSystemNnnReadingSize(c: Context): Int =
+        prefs(c).getInt(KEY_SYSTEMNNN_READING_SIZE, 0).takeIf { it in SYSTEMNNN_READING_SIZES }
+            ?: SystemNnnHost.legacyReadingSize(c)
+
+    fun isSystemNnnExeAnalysisEnabled(c: Context): Boolean =
+        prefs(c).getBoolean(KEY_SYSTEMNNN_EXE_ANALYSIS, SystemNnnHost.DEFAULT_EXE_ANALYSIS)
+
+    fun isSystemNnnDebugMode(c: Context): Boolean =
+        prefs(c).getBoolean(KEY_SYSTEMNNN_DEBUG_MODE, SystemNnnHost.DEFAULT_DEBUG_MODE)
+
+    fun saveSystemNnnSettings(c: Context, fullscreen: Boolean, readingSize: Int, exeAnalysis: Boolean, debugMode: Boolean) {
+        require(readingSize in SYSTEMNNN_READING_SIZES)
+        prefs(c).edit()
+            .putBoolean(KEY_SYSTEMNNN_FULLSCREEN, fullscreen)
+            .putInt(KEY_SYSTEMNNN_READING_SIZE, readingSize)
+            .putBoolean(KEY_SYSTEMNNN_EXE_ANALYSIS, exeAnalysis)
+            .putBoolean(KEY_SYSTEMNNN_DEBUG_MODE, debugMode)
+            .apply()
+    }
 
     // ---------- CMVS ----------
     fun getCmvsFont(c: Context): String = prefs(c).getString(KEY_CMVS_FONT, "").orEmpty()
@@ -1280,5 +1370,185 @@ object EngineSettingsStore {
         normalizeRuffleAllowed(v, RUFFLE_LOAD_BEHAVIORS, RUFFLE_LOAD_BEHAVIOR_STREAMING)
 
     private fun normalizeRuffleAllowed(v: String?, allowed: Set<String>, fallback: String): String =
+        v?.trim()?.lowercase(java.util.Locale.ROOT)?.takeIf { it in allowed } ?: fallback
+
+    private const val KEY_SHIINARIO_SETTINGS = "shiinario_settings"
+
+    fun loadShiinaRio(context: Context): ShiinaRioSettings =
+        ShiinaRioSettings.fromStoredJson(prefs(context).getString(KEY_SHIINARIO_SETTINGS, null))
+            .withFallback(ShiinaRioSettings.Defaults)
+
+    fun saveShiinaRio(context: Context, settings: ShiinaRioSettings) {
+        prefs(context).edit().putString(KEY_SHIINARIO_SETTINGS, settings.toJson().toString()).apply()
+    }
+
+    // ---------- MAGES.（impacto）外置宿主 ----------
+
+    /**
+     * MAGES.（impacto）宿主的配置节。字段对应上游 `userconfig.toml` 里 Android 上有意义的项（默认值与上游一致）：
+     * swapConfirmCancel → CommonSettings.SwapConfirmCancelButtons；vsync → GameSettings.<profile>.UseVSync；
+     * videoPlayback → AdvancedSettings.VideoPlayer（FFmpeg / None）；subtitles →
+     * EnhancementsSettings.SubtitleConfig（影片字幕轨，三档 all / translation / karaoke）；closeBacklogAtEnd → EnhancementsSettings.CloseBacklogWhenReachedEnd；
+     * delusionMouse → EnhancementsSettings.CHLCC / CCLCC.DelusionMousePatch；logLevel → CommonSettings.LogLvl；
+     * debugMode → CommonSettings.DebugMode（宿主 0.4.3 起的适配用调试模式，三指打开调试菜单；更早的宿主忽略这个键）。
+     * 分辨率、显示模式、渲染器与音频后端在 Android 上由系统和宿主固定，不在此列。
+     */
+    data class Impacto(
+        var swapConfirmCancel: Boolean = false,
+        var vsync: Boolean = true,
+        var videoPlayback: Boolean = true,
+        var subtitles: String = IMPACTO_SUBTITLES_ALL,
+        var closeBacklogAtEnd: Boolean = true,
+        var delusionMouse: Boolean = true,
+        var logLevel: String = IMPACTO_LOG_LEVEL_WARNING,
+        var debugMode: Boolean = false,
+    )
+
+    private val IMPACTO_BOOL_KEYS = listOf(
+        KEY_IMPACTO_SWAP_CONFIRM_CANCEL, KEY_IMPACTO_VSYNC, KEY_IMPACTO_VIDEO_PLAYBACK,
+        KEY_IMPACTO_CLOSE_BACKLOG_AT_END, KEY_IMPACTO_DELUSION_MOUSE, KEY_IMPACTO_DEBUG_MODE,
+    )
+
+    fun loadImpacto(c: Context): Impacto {
+        val p = prefs(c)
+        val d = Impacto()
+        return Impacto(
+            swapConfirmCancel = p.getBoolean(KEY_IMPACTO_SWAP_CONFIRM_CANCEL, d.swapConfirmCancel),
+            vsync = p.getBoolean(KEY_IMPACTO_VSYNC, d.vsync),
+            videoPlayback = p.getBoolean(KEY_IMPACTO_VIDEO_PLAYBACK, d.videoPlayback),
+            subtitles = normalizeImpactoSubtitles(p.getString(KEY_IMPACTO_SUBTITLES, null)),
+            closeBacklogAtEnd = p.getBoolean(KEY_IMPACTO_CLOSE_BACKLOG_AT_END, d.closeBacklogAtEnd),
+            delusionMouse = p.getBoolean(KEY_IMPACTO_DELUSION_MOUSE, d.delusionMouse),
+            logLevel = normalizeImpactoLogLevel(p.getString(KEY_IMPACTO_LOG_LEVEL, null)),
+            debugMode = p.getBoolean(KEY_IMPACTO_DEBUG_MODE, d.debugMode),
+        )
+    }
+
+    fun saveImpacto(c: Context, s: Impacto) {
+        prefs(c).edit().apply {
+            putBoolean(KEY_IMPACTO_SWAP_CONFIRM_CANCEL, s.swapConfirmCancel)
+            putBoolean(KEY_IMPACTO_VSYNC, s.vsync)
+            putBoolean(KEY_IMPACTO_VIDEO_PLAYBACK, s.videoPlayback)
+            putString(KEY_IMPACTO_SUBTITLES, normalizeImpactoSubtitles(s.subtitles))
+            putBoolean(KEY_IMPACTO_CLOSE_BACKLOG_AT_END, s.closeBacklogAtEnd)
+            putBoolean(KEY_IMPACTO_DELUSION_MOUSE, s.delusionMouse)
+            putString(KEY_IMPACTO_LOG_LEVEL, normalizeImpactoLogLevel(s.logLevel))
+            putBoolean(KEY_IMPACTO_DEBUG_MODE, s.debugMode)
+        }.apply()
+    }
+
+    /** 仅重置 impacto 节，其余引擎设置不动。 */
+    fun resetImpacto(c: Context) {
+        val editor = prefs(c).edit()
+        IMPACTO_BOOL_KEYS.forEach(editor::remove)
+        editor.remove(KEY_IMPACTO_LOG_LEVEL)
+        editor.remove(KEY_IMPACTO_SUBTITLES)
+        editor.apply()
+    }
+
+    fun normalizeImpactoLogLevel(v: String?): String =
+        v?.trim()?.lowercase(java.util.Locale.ROOT)?.takeIf { it in IMPACTO_LOG_LEVELS } ?: IMPACTO_LOG_LEVEL_WARNING
+
+    fun normalizeImpactoSubtitles(v: String?): String =
+        v?.trim()?.lowercase(java.util.Locale.ROOT)?.takeIf { it in IMPACTO_SUBTITLES } ?: IMPACTO_SUBTITLES_ALL
+
+    // ---------- EasyRPG 外置宿主 ----------
+
+    /** EasyRPG 外置宿主配置节（13 项，与宿主 EXTRA_SETTINGS JSON 键一一对应）。 */
+    data class EasyRpg(
+        var encoding: String = EASYRPG_ENCODING_AUTO,
+        var scaling: String = EASYRPG_SCALING_BILINEAR,
+        var gameResolution: String = EASYRPG_RESOLUTION_ORIGINAL,
+        var stretch: Boolean = false,
+        var vsync: Boolean = true,
+        var fpsLimit: Int = EASYRPG_FPS_LIMIT_DEFAULT,
+        var showFps: Boolean = false,
+        var disableAudio: Boolean = false,
+        var musicVolume: Int = EASYRPG_VOLUME_DEFAULT,
+        var soundVolume: Int = EASYRPG_VOLUME_DEFAULT,
+        var noRtp: Boolean = false,
+        var patchMode: String = EASYRPG_PATCH_MODE_AUTO,
+        var testPlay: Boolean = false,
+    )
+
+    private val EASYRPG_BOOL_KEYS = listOf(
+        KEY_EASYRPG_STRETCH, KEY_EASYRPG_VSYNC, KEY_EASYRPG_SHOW_FPS,
+        KEY_EASYRPG_DISABLE_AUDIO, KEY_EASYRPG_NO_RTP, KEY_EASYRPG_TEST_PLAY,
+    )
+
+    private val EASYRPG_INT_KEYS = listOf(
+        KEY_EASYRPG_FPS_LIMIT, KEY_EASYRPG_MUSIC_VOLUME, KEY_EASYRPG_SOUND_VOLUME,
+    )
+
+    private val EASYRPG_STRING_KEYS = listOf(
+        KEY_EASYRPG_ENCODING, KEY_EASYRPG_SCALING, KEY_EASYRPG_GAME_RESOLUTION, KEY_EASYRPG_PATCH_MODE,
+    )
+
+    fun loadEasyRpg(c: Context): EasyRpg {
+        val p = prefs(c)
+        val d = EasyRpg()
+        return EasyRpg(
+            encoding = normalizeEasyRpgEncoding(p.getString(KEY_EASYRPG_ENCODING, null)),
+            scaling = normalizeEasyRpgScaling(p.getString(KEY_EASYRPG_SCALING, null)),
+            gameResolution = normalizeEasyRpgGameResolution(p.getString(KEY_EASYRPG_GAME_RESOLUTION, null)),
+            stretch = p.getBoolean(KEY_EASYRPG_STRETCH, d.stretch),
+            vsync = p.getBoolean(KEY_EASYRPG_VSYNC, d.vsync),
+            fpsLimit = normalizeEasyRpgFpsLimit(p.getInt(KEY_EASYRPG_FPS_LIMIT, d.fpsLimit)),
+            showFps = p.getBoolean(KEY_EASYRPG_SHOW_FPS, d.showFps),
+            disableAudio = p.getBoolean(KEY_EASYRPG_DISABLE_AUDIO, d.disableAudio),
+            musicVolume = normalizeEasyRpgVolume(p.getInt(KEY_EASYRPG_MUSIC_VOLUME, d.musicVolume)),
+            soundVolume = normalizeEasyRpgVolume(p.getInt(KEY_EASYRPG_SOUND_VOLUME, d.soundVolume)),
+            noRtp = p.getBoolean(KEY_EASYRPG_NO_RTP, d.noRtp),
+            patchMode = normalizeEasyRpgPatchMode(p.getString(KEY_EASYRPG_PATCH_MODE, null)),
+            testPlay = p.getBoolean(KEY_EASYRPG_TEST_PLAY, d.testPlay),
+        )
+    }
+
+    fun saveEasyRpg(c: Context, s: EasyRpg) {
+        prefs(c).edit().apply {
+            putString(KEY_EASYRPG_ENCODING, normalizeEasyRpgEncoding(s.encoding))
+            putString(KEY_EASYRPG_SCALING, normalizeEasyRpgScaling(s.scaling))
+            putString(KEY_EASYRPG_GAME_RESOLUTION, normalizeEasyRpgGameResolution(s.gameResolution))
+            putBoolean(KEY_EASYRPG_STRETCH, s.stretch)
+            putBoolean(KEY_EASYRPG_VSYNC, s.vsync)
+            putInt(KEY_EASYRPG_FPS_LIMIT, normalizeEasyRpgFpsLimit(s.fpsLimit))
+            putBoolean(KEY_EASYRPG_SHOW_FPS, s.showFps)
+            putBoolean(KEY_EASYRPG_DISABLE_AUDIO, s.disableAudio)
+            putInt(KEY_EASYRPG_MUSIC_VOLUME, normalizeEasyRpgVolume(s.musicVolume))
+            putInt(KEY_EASYRPG_SOUND_VOLUME, normalizeEasyRpgVolume(s.soundVolume))
+            putBoolean(KEY_EASYRPG_NO_RTP, s.noRtp)
+            putString(KEY_EASYRPG_PATCH_MODE, normalizeEasyRpgPatchMode(s.patchMode))
+            putBoolean(KEY_EASYRPG_TEST_PLAY, s.testPlay)
+        }.apply()
+    }
+
+    /** 仅重置 easyRpg 节，其余引擎设置不动。 */
+    fun resetEasyRpg(c: Context) {
+        val editor = prefs(c).edit()
+        EASYRPG_BOOL_KEYS.forEach(editor::remove)
+        EASYRPG_INT_KEYS.forEach(editor::remove)
+        EASYRPG_STRING_KEYS.forEach(editor::remove)
+        editor.apply()
+    }
+
+    fun normalizeEasyRpgEncoding(v: String?): String =
+        normalizeAllowed(v, EASYRPG_ENCODINGS, EASYRPG_ENCODING_AUTO)
+
+    fun normalizeEasyRpgScaling(v: String?): String =
+        normalizeAllowed(v, EASYRPG_SCALINGS, EASYRPG_SCALING_BILINEAR)
+
+    fun normalizeEasyRpgGameResolution(v: String?): String =
+        normalizeAllowed(v, EASYRPG_RESOLUTIONS, EASYRPG_RESOLUTION_ORIGINAL)
+
+    fun normalizeEasyRpgPatchMode(v: String?): String =
+        normalizeAllowed(v, EASYRPG_PATCH_MODES, EASYRPG_PATCH_MODE_AUTO)
+
+    fun normalizeEasyRpgFpsLimit(v: Int?): Int =
+        v?.takeIf { it in EASYRPG_FPS_LIMIT_RANGE } ?: EASYRPG_FPS_LIMIT_DEFAULT
+
+    fun normalizeEasyRpgVolume(v: Int?): Int =
+        v?.takeIf { it in EASYRPG_VOLUME_RANGE } ?: EASYRPG_VOLUME_DEFAULT
+
+    private fun normalizeAllowed(v: String?, allowed: Set<String>, fallback: String): String =
         v?.trim()?.lowercase(java.util.Locale.ROOT)?.takeIf { it in allowed } ?: fallback
 }

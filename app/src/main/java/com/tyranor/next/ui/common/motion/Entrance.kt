@@ -18,13 +18,18 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.node.CompositionLocalConsumerModifierNode
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.LayoutAwareModifierNode
 import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.ObserverModifierNode
@@ -78,7 +83,7 @@ class EntranceState internal constructor() {
     private var nextSlot = 0
 
     /**
-     * 本轮入场的屏幕次序：按元素启动入场的先后发放（与组合顺序一致，即屏幕上从上到下）。
+     * 首次挂载路径下本轮入场的屏幕次序：按元素启动入场的先后发放（与组合顺序一致，即屏幕上从上到下）；重播不走这里。
      * 不能只用调用方传的列表下标：列表滚到中下部时，屏幕上第一行的下标已经很大，
      * 按下标算延迟会让整屏内容一起空等到封顶延迟。
      */
@@ -114,12 +119,40 @@ class EntranceState internal constructor() {
         skipMark = skipCounter
         this.quick = quick
         generation++
-        // 已挂载的元素按挂载顺序（= 组合顺序）依次领号并（重新）开始入场；不再触发任何重组
-        var i = 0
-        while (i < nodes.size) {
-            nodes[i].onReplay(this)
-            i++
+        // 已挂载的元素按它们此刻在屏幕上的纵向位置领号并（重新）开始入场；不再触发任何重组。
+        // 不能按挂载顺序：同一个节拍下可能挂着好几页（引擎页的四个分类常驻组合）、列表又会边滚边回收重建，
+        // 挂载顺序 ≠ 屏幕顺序——列表往下翻过之后，当前页的行排在别的分类页的几十个节点后面，
+        // 次序一律撞上封顶，整页先空白等满封顶延迟再一起弹出。
+        val count = nodes.size
+        val tops = FloatArray(count)
+        val bottoms = FloatArray(count)
+        for (n in 0 until count) {
+            tops[n] = nodes[n].screenTop()
+            bottoms[n] = nodes[n].screenBottom()
         }
+        val order = (0 until count).sortedBy { tops[it] }
+        var slot = -1
+        var rowTop = Float.NaN
+        for (n in order) {
+            val top = tops[n]
+            val assigned = when {
+                // 完全在屏幕上方的（滚出去的 / 预取的）看不见，次序无所谓，别占位
+                bottoms[n] <= 0f -> 0
+                // 还没放置过：排在最后
+                top.isInfinite() -> slot + 1
+                else -> {
+                    // 同一行（纵坐标相同或几乎相同）共用一个次序：两列网格、被隐藏的分类页与当前页重叠的行都按行错开
+                    if (rowTop.isNaN() || top - rowTop > ROW_EPSILON_PX) {
+                        slot++
+                        rowTop = top
+                    }
+                    slot
+                }
+            }
+            nodes[n].onReplay(this, assigned.coerceAtLeast(0))
+        }
+        slotGeneration = generation
+        nextSlot = (slot + 2).coerceAtLeast(1)
     }
 
     private var nextOrder = 0
@@ -141,6 +174,9 @@ class EntranceState internal constructor() {
 
     internal companion object {
         const val WINDOW_MILLIS = 500L
+
+        /** 判定「同一行」的纵坐标容差（px）。 */
+        const val ROW_EPSILON_PX = 6f
     }
 }
 
@@ -226,18 +262,25 @@ fun Modifier.staggeredEntrance(
     index: Int,
     distance: Dp = 22.dp,
     stepMillis: Long = 30L,
-): Modifier = this then StaggeredEntranceElement(index, distance, stepMillis)
+    /**
+     * false = 只在第一次出现时入场，之后主界面切回这一页的 [EntranceState.replay] 不再重播：
+     * 书架上的书与搁板是「摆在那儿」的实物，切走再切回来不该一本本消失又重新立起（看起来像整排书重新加载）。
+     */
+    replay: Boolean = true,
+): Modifier = this then StaggeredEntranceElement(index, distance, stepMillis, replay)
 
 private class StaggeredEntranceElement(
     val index: Int,
     val distance: Dp,
     val stepMillis: Long,
+    val replay: Boolean,
 ) : ModifierNodeElement<StaggeredEntranceNode>() {
-    override fun create(): StaggeredEntranceNode = StaggeredEntranceNode(index, distance, stepMillis)
+    override fun create(): StaggeredEntranceNode = StaggeredEntranceNode(index, distance, stepMillis, replay)
 
     override fun update(node: StaggeredEntranceNode) {
         node.index = index
         node.stepMillis = stepMillis
+        node.replayable = replay
         // 下一个动画帧图层块重跑时即读到新值；静止时 distance 不参与绘制
         node.distance = distance
     }
@@ -246,13 +289,14 @@ private class StaggeredEntranceElement(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is StaggeredEntranceElement) return false
-        return index == other.index && distance == other.distance && stepMillis == other.stepMillis
+        return index == other.index && distance == other.distance && stepMillis == other.stepMillis && replay == other.replay
     }
 
     override fun hashCode(): Int {
         var result = index
         result = 31 * result + distance.hashCode()
         result = 31 * result + stepMillis.hashCode()
+        result = 31 * result + replay.hashCode()
         return result
     }
 
@@ -261,6 +305,7 @@ private class StaggeredEntranceElement(
         properties["index"] = index
         properties["distance"] = distance
         properties["stepMillis"] = stepMillis
+        properties["replay"] = replay
     }
 }
 
@@ -280,14 +325,24 @@ internal class StaggeredEntranceNode(
     var index: Int,
     var distance: Dp,
     var stepMillis: Long,
-) : Modifier.Node(), LayoutModifierNode, CompositionLocalConsumerModifierNode, ObserverModifierNode {
+    var replayable: Boolean = true,
+) : Modifier.Node(), LayoutModifierNode, LayoutAwareModifierNode, CompositionLocalConsumerModifierNode, ObserverModifierNode, DrawModifierNode {
 
     private var state: EntranceState? = null
+
+    /** 最近一次放置的坐标：重播入场时按屏幕位置排次序用（只存引用，不在每次放置时计算）。 */
+    private var placedCoordinates: LayoutCoordinates? = null
     private var anim by mutableStateOf<EntranceAnim?>(null)
     private var playJob: Job? = null
 
     /** 一旦播放过就一直走图层（避免动画结束时图层抖动）；从未播放过则不挂图层。 */
     private var layerActive = false
+    private var drawnWithoutEntrance = false
+
+    override fun ContentDrawScope.draw() {
+        if (!replayable && !layerActive) drawnWithoutEntrance = true
+        drawContent()
+    }
 
     /** 只存一份的图层块：动画值在块里读取，变化只失效图层，放置时不分配。 */
     private val layerBlock: GraphicsLayerScope.() -> Unit = block@{
@@ -313,6 +368,21 @@ internal class StaggeredEntranceNode(
             scaleY = s
             transformOrigin = ENTRANCE_ORIGIN
         }
+    }
+
+    override fun onPlaced(coordinates: LayoutCoordinates) {
+        placedCoordinates = coordinates
+    }
+
+    /** 在根坐标系里的顶边（px）；还没放置过、或已脱离布局树为正无穷。 */
+    internal fun screenTop(): Float {
+        val c = placedCoordinates ?: return Float.POSITIVE_INFINITY
+        return if (c.isAttached) c.positionInRoot().y else Float.POSITIVE_INFINITY
+    }
+
+    internal fun screenBottom(): Float {
+        val c = placedCoordinates ?: return Float.POSITIVE_INFINITY
+        return if (c.isAttached) c.positionInRoot().y + c.size.height else Float.POSITIVE_INFINITY
     }
 
     /** 挂载时订阅最近的入场作用域，并在有效窗口内准备首帧隐藏态。 */
@@ -342,7 +412,7 @@ internal class StaggeredEntranceNode(
         if (st == null) return
         st.attach(this)
         // 与旧版「组合时 isFresh」同一时刻决定：入场窗口内、未被拖动跳过、「增强」档才播放
-        if (MotionMode.enhanced && st.isFresh()) beginPlay(st, relayout)
+        if (MotionMode.enhanced && st.isFresh() && (replayable || !drawnWithoutEntrance)) beginPlay(st, relayout)
     }
 
     /** 卸载时解除节拍登记并丢弃动画，避免懒列表复用继承半透明状态。 */
@@ -354,6 +424,8 @@ internal class StaggeredEntranceNode(
         // 卸载 = 旧版整个组合被销毁：丢掉动画；重新挂载（懒列表复用）按新元素重新决定，不会停在半透明
         anim = null
         layerActive = false
+        drawnWithoutEntrance = false
+        placedCoordinates = null
     }
 
     /** 懒列表回收节点时作废当前动画，让旧内容立即恢复完整显示。 */
@@ -368,21 +440,23 @@ internal class StaggeredEntranceNode(
     }
 
     /** [EntranceState.replay]：已挂载的元素重新（或首次）播放。 */
-    fun onReplay(st: EntranceState) {
+    fun onReplay(st: EntranceState, slot: Int) {
         if (!MotionMode.enhanced) return
-        beginPlay(st, relayout = true)
+        // 只入场一次的元素（书架的书 / 搁板）：播过一次之后不再随切回标签页重播
+        if (!replayable && (layerActive || drawnWithoutEntrance)) return
+        beginPlay(st, relayout = true, slotOverride = slot)
     }
 
     /** 为本轮领取屏幕顺序并替换旧任务；协程启动前先隐藏，防止首帧闪现。 */
-    private fun beginPlay(st: EntranceState, relayout: Boolean) {
+    private fun beginPlay(st: EntranceState, relayout: Boolean, slotOverride: Int = -1) {
         val an = anim ?: EntranceAnim().also { anim = it }
         an.token++
         val token = an.token
         // 立刻按隐藏画：协程还没来得及运行的那几帧也不会先以原样闪一下
         an.mode = MODE_HIDDEN
         val generation = st.generation
-        // 屏幕次序：按元素启动入场的先后发放（与组合 / 挂载顺序一致）
-        val slot = st.takeSlot(generation)
+        // 屏幕次序：首次挂载时按元素启动入场的先后发放（与组合 / 挂载顺序一致）；重播由 replay 按屏幕位置算好后经 slotOverride 传入
+        val slot = if (slotOverride >= 0) slotOverride else st.takeSlot(generation)
         val newLayer = !layerActive
         layerActive = true
         playJob?.cancel()

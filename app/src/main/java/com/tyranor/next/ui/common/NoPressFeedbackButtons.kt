@@ -19,15 +19,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.tyranor.next.theme.AppComponentShape
+import com.tyranor.next.theme.AppThemeColors
+import com.tyranor.next.theme.BookSerifBold
+import com.tyranor.next.theme.CurrentBookPaperPalette
+import com.tyranor.next.theme.DangerFill
+import com.tyranor.next.theme.LocalShelfBookLeaf
+import com.tyranor.next.theme.ShelfBookDeleteStyle
+import com.tyranor.next.theme.shelfBookLaunchStyle
 import com.tyranor.next.ui.common.motion.pressSquish
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.ui.draw.drawBehind
 import com.tyranor.next.ui.common.motion.MotionMode
 import com.tyranor.next.ui.common.motion.MotionTokens
+import com.tyranor.next.ui.common.motion.shelfBookMarker
 
 /**
  * 页内无按压反馈按钮（配合 AGENTS.md「弹窗点击反馈统一规范」的同一意图）。
@@ -49,6 +60,8 @@ fun NoRippleTextButton(
 ) {
     val targetColor = if (enabled) {
         contentColor
+    } else if (LocalShelfBookLeaf.current) {
+        CurrentBookPaperPalette.inkMuted
     } else {
         MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
     }
@@ -69,9 +82,21 @@ internal fun NoRippleActionText(
     colorLabel: String,
     onClick: () -> Unit,
 ) {
+    val inBook = LocalShelfBookLeaf.current
+    val interaction = remember { MutableInteractionSource() }
+    val textStyle = if (inBook) {
+        MaterialTheme.typography.bodyMedium.copy(
+            fontFamily = BookSerifBold,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 0.4.sp,
+        )
+    } else {
+        MaterialTheme.typography.bodyMedium
+    }
     Text(
         text = text,
-        style = MaterialTheme.typography.bodyMedium,
+        style = textStyle,
+        textAlign = TextAlign.Center,
         // 可用 ↔ 不可用：「增强」档文字颜色弹簧淡变，「普通」档直接切换
         color = if (MotionMode.enhanced) {
             animateColorAsState(targetColor, MotionTokens.fadeIn(), label = colorLabel).value
@@ -81,9 +106,10 @@ internal fun NoRippleActionText(
         modifier = modifier
             .pressSquish(enabled = enabled, refuse = true)
             .clip(AppComponentShape)
+            .then(if (inBook) Modifier.shelfBookMarker(interaction, CurrentBookPaperPalette.marker) else Modifier)
             .clickable(
                 enabled = enabled,
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interaction,
                 indication = null,
                 onClick = onClick,
             )
@@ -92,8 +118,8 @@ internal fun NoRippleActionText(
 }
 
 /**
- * 页内填充按钮：无涟漪/按压效果。
- * [tonal] = true 时为浅色底（主色 14%）+ 主色文字，用于次级动作（如「前往授权」）。
+ * 页内填充按钮：无涟漪/按压效果；在书页宿主（[LocalShelfBookLeaf]）内自动切为 45° 斜切书扣按钮。
+ * [tonal] = true 时为浅色底（[fillColor] 的 14%）+ 同色文字，书页内则表现为羊皮纸细框样式。
  */
 @Composable
 fun NoRippleButton(
@@ -103,15 +129,59 @@ fun NoRippleButton(
     tonal: Boolean = false,
     leadingIcon: Painter? = null,
     iconContentDescription: String? = null,
+    fillColor: Color = MaterialTheme.colorScheme.primary,
+    maxLines: Int = 1,
     onClick: () -> Unit,
 ) {
-    val container = when {
-        tonal -> MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-        enabled -> MaterialTheme.colorScheme.primary
-        else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.38f)
+    if (LocalShelfBookLeaf.current) {
+        val palette = CurrentBookPaperPalette
+        val themePrimary = MaterialTheme.colorScheme.primary
+        val style = when {
+            tonal -> bookParchmentButtonStyle(palette)
+            fillColor == DangerFill || fillColor == palette.dangerInk -> ShelfBookDeleteStyle
+            fillColor == themePrimary -> shelfBookLaunchStyle(AppThemeColors.primary)
+            else -> shelfBookLaunchStyle(fillColor)
+        }
+        val interaction = remember { MutableInteractionSource() }
+        BookScrollClaspButton(
+            style = style,
+            onClick = onClick,
+            height = 42.dp,
+            modifier = modifier,
+            enabled = enabled,
+            fillMaxWidth = false,
+            interactionSource = interaction,
+            leadingIcon = leadingIcon?.let { painter ->
+                {
+                    Icon(
+                        painter = painter,
+                        contentDescription = iconContentDescription,
+                        tint = style.content,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            },
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontFamily = BookSerifBold,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 0.6.sp,
+                ),
+                color = style.content,
+                maxLines = maxLines,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        return
     }
-    // 主题色实底上的文字/图标固定白色（不随主题色变化）；tonal 为浅底次级样式，文字用主题色
-    val contentColor = if (tonal) MaterialTheme.colorScheme.primary else Color.White
+    val container = when {
+        tonal -> fillColor.copy(alpha = 0.14f)
+        enabled -> fillColor
+        else -> fillColor.copy(alpha = 0.38f)
+    }
+    val contentColor = if (tonal) fillColor else Color.White
     val enhanced = MotionMode.enhanced
     // 可用 ↔ 不可用、实底 ↔ 浅底：「增强」档底色弹簧淡变（在绘制阶段读取，不逐帧重组），「普通」档直接切换
     val animatedContainer = if (enhanced) {
@@ -153,7 +223,7 @@ fun NoRippleButton(
             text = text,
             style = MaterialTheme.typography.bodyMedium,
             color = contentColor,
-            maxLines = 1,
+            maxLines = maxLines,
             overflow = TextOverflow.Ellipsis,
         )
     }

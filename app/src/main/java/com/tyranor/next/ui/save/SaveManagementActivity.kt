@@ -22,6 +22,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,12 +46,17 @@ import com.tyranor.next.core.game.save.RpgSaveFormat
 import com.tyranor.next.core.game.save.RpgSaveSync
 import com.tyranor.next.core.game.save.sync.SaveSyncException
 import com.tyranor.next.core.game.save.sync.SaveSyncRuntime
+import com.tyranor.next.core.game.save.sync.SaveSyncService
+import com.tyranor.next.core.game.save.sync.RuntimeSaveIdentityChange
+import com.tyranor.next.core.game.save.sync.RuntimeSaveIdentityChangeResult
 import com.tyranor.next.core.game.save.sync.requiresExternalSaveExitConfirmation
 import com.tyranor.next.core.game.launch.EngineLauncher
 import com.tyranor.next.core.game.model.ScanGame
 import com.tyranor.next.core.game.model.ScanGameIntents
+import com.tyranor.next.core.privacy.AppLockController
 import com.tyranor.next.theme.PageTextColor
 import com.tyranor.next.theme.NavWhite
+import com.tyranor.next.theme.SecondaryTextColor
 import com.tyranor.next.theme.TextColor
 import com.tyranor.next.theme.DialogItemSurface
 import com.tyranor.next.theme.AppComponentCornerRadius
@@ -62,6 +69,7 @@ import com.tyranor.next.ui.common.AppScreenActivity
 import com.tyranor.next.ui.common.AppSecondaryTopBar
 import com.tyranor.next.ui.common.BottomInsetSpacer
 import com.tyranor.next.ui.common.DialogTextButton
+import com.tyranor.next.ui.common.LocalDialogExit
 import com.tyranor.next.ui.common.motion.BlurCrossfade
 import com.tyranor.next.ui.common.motion.ExpandVisibility
 import com.tyranor.next.ui.common.motion.listItemMotion
@@ -73,13 +81,17 @@ import com.tyranor.next.ui.common.motion.skipEntranceOnDrag
 import com.tyranor.next.ui.common.motion.staggeredEntrance
 import com.tyranor.next.ui.common.toSaveSyncMessage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.Scaffold as MiuixScaffold
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import com.tyranor.next.ui.common.notice.AppNotice
+import java.io.Serializable
 
 class SaveManagementActivity : AppScreenActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,7 +104,7 @@ class SaveManagementActivity : AppScreenActivity() {
         }
 
         setAppScreenContent {
-            SaveManagementScreen(game = game)
+            SaveManagementContent(game = game, inBook = false)
         }
     }
 
@@ -104,12 +116,86 @@ class SaveManagementActivity : AppScreenActivity() {
     }
 }
 
+private data class BookSaveExportRequest(
+    val gameUri: String,
+    val format: GameSaveManager.ExportFormat,
+    val destination: String? = null,
+) : Serializable
+
+private fun bookSaveExportAllowed(): Boolean =
+    !AppLockController.lockedState.value && !AppLockController.willRequireUnlockOnEntering()
+
+/**
+ * 「游戏盒」翻开的书里的存档管理：不另开二级页面，存档页翻在书的下一页上（章名「存档管理」，正文是存档位置、
+ * 导入 / 导出 / 删除与存档版本，页脚「关闭」先翻回再关；其中的确认弹窗继续往后翻）。内容与二级页面是同一份（[SaveManagementContent]）。
+ * 导出请求和选择器注册属于此宿主，不依赖 [AppAlertDialog] 每次呈现时新建的书页对象。
+ */
+@Composable
+internal fun SaveManagementDialog(game: ScanGame, onDismiss: () -> Unit) {
+    var busy by remember { mutableStateOf(false) }
+    val canDismiss = { !busy }
+    var exportRequest by rememberSaveable(game.uri) { mutableStateOf<BookSaveExportRequest?>(null) }
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        val request = exportRequest
+        if (request != null && request.destination == null) {
+            exportRequest = if (uri != null && request.gameUri == game.uri && bookSaveExportAllowed()) {
+                request.copy(destination = uri.toString())
+            } else null
+        }
+    }
+    AppAlertDialog(
+        onDismissRequest = onDismiss,
+        dismissEnabledNow = canDismiss,
+        title = { Text(stringResource(R.string.save_management_title), style = MaterialTheme.typography.titleMedium) },
+        text = {
+            SaveManagementContent(
+                game = game,
+                inBook = true,
+                onBusyChange = { busy = it },
+                onBookExport = { format ->
+                    if (exportRequest == null && bookSaveExportAllowed()) {
+                        exportRequest = BookSaveExportRequest(game.uri, format)
+                        exportLauncher.launch(defaultArchiveName(game))
+                    }
+                },
+                bookExportResult = exportRequest?.takeIf { it.destination != null },
+                consumeBookExportResult = { request ->
+                    if (exportRequest !== request) false
+                    else {
+                        exportRequest = null
+                        request.gameUri == game.uri && bookSaveExportAllowed()
+                    }
+                },
+            )
+        },
+        confirmButton = {
+            val exit = LocalDialogExit.current
+            CompositionLocalProvider(LocalDialogExit provides null) {
+                DialogTextButton(text = stringResource(R.string.common_close), enabled = !busy) {
+                    if (!canDismiss()) return@DialogTextButton
+                    if (exit != null) exit.closeThen(onDismiss) else onDismiss()
+                }
+            }
+        },
+    )
+}
+
 /**
  * Shows one game's save location and serializes import, export, deletion, and synchronization tasks.
  * Refreshes file counts and version panels after an operation while preserving typed failure messages.
+ * [inBook]：书页里的版本——没有顶栏与整页脚手架，卡片底色取弹窗条目色。
  */
 @Composable
-private fun SaveManagementScreen(game: ScanGame) {
+private fun SaveManagementContent(
+    game: ScanGame,
+    inBook: Boolean,
+    onBusyChange: (Boolean) -> Unit = {},
+    onBookExport: ((GameSaveManager.ExportFormat) -> Unit)? = null,
+    bookExportResult: BookSaveExportRequest? = null,
+    consumeBookExportResult: (BookSaveExportRequest) -> Boolean = { false },
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val saveOperationFailedMessage = stringResource(R.string.save_operation_failed)
@@ -125,30 +211,57 @@ private fun SaveManagementScreen(game: ScanGame) {
     // 会话运行中/启动中：手动同步被拒绝的提示
     val saveBusyEngineRunningMessage = stringResource(R.string.save_busy_engine_running)
     val externalExitDoneMessage = stringResource(R.string.save_external_exit_done)
+    val runtimeIdentityConfirmedMessage = stringResource(R.string.save_runtime_identity_confirmed)
+    val runtimeIdentityStaleMessage = stringResource(R.string.save_runtime_identity_stale)
     val clearImportedResourcesDone = stringResource(R.string.save_systemnnn_clear_resources_done)
     val manager = remember { GameSaveManager(context) }
+    val saveSyncService = remember { SaveSyncService(context) }
     var location by remember { mutableStateOf<GameSaveManager.SaveLocation?>(null) }
-    var fileCount by remember { mutableStateOf(0) }
+    var fileCount by remember { mutableIntStateOf(0) }
     var refreshError by remember { mutableStateOf<String?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var hasImportedResources by remember { mutableStateOf(false) }
     var showClearImportedResources by remember { mutableStateOf(false) }
     var showExportFormatPicker by remember { mutableStateOf(false) }
-    // CreateDocument 系统页期间进程重建后仍按用户所选格式导出。
-    var exportFormat by rememberSaveable { mutableStateOf(GameSaveManager.ExportFormat.TYRANOR) }
     val rpgWebGame = RpgSaveFormat.isRpgWebEngine(game.engine)
     // 存档互通生效值（单游戏覆盖 > 全局）：L7——关闭时隐藏「立即同步」，
     // 避免用户在功能未开启时触发出人意料的删除归置语义
     var saveInteropEnabled by remember { mutableStateOf(false) }
     // 导入/导出/删除互斥：并发任务会互相清掉对方的暂存目录，破坏导入的原子性
     var taskRunning by remember { mutableStateOf(false) }
+    val opMutex = remember(game.uri) { Mutex() }
+    DisposableEffect(Unit) { onDispose { onBusyChange(false) } }
     var versionsRevision by remember { mutableIntStateOf(0) }
-    var externalExitConfirmation by remember(game) {
+    var externalExitConfirmation by remember(game.uri) {
         mutableStateOf<SaveSyncRuntime.ExternalExitConfirmation?>(null)
     }
+    var externalSessionPending by remember(game.uri) { mutableStateOf(false) }
+    var externalSessionSummary by remember(game.uri) { mutableStateOf<SaveSyncRuntime.ExternalExitConfirmationSummary?>(null) }
+    var runtimeIdentityChange by remember(game.uri) { mutableStateOf<RuntimeSaveIdentityChange?>(null) }
+    var showRuntimeIdentityConfirmation by remember(game.uri) { mutableStateOf(false) }
+    val canManageFiles = location?.available == true
 
     // 目录解析与文件递归遍历均为磁盘 IO：统一切到 IO 线程，避免组合期/主线程卡顿
-    suspend fun refresh() {
+    suspend fun refreshLocked() {
+        try {
+            externalSessionSummary = withContext(Dispatchers.IO) {
+                SaveSyncRuntime.pendingExternalExitConfirmations(context).firstOrNull { it.uri == game.uri }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            externalSessionSummary = null
+        }
+        externalSessionPending = externalSessionSummary != null
+        runtimeIdentityChange = try {
+            if (game.engine == EngineType.RUNTIME_MODULE) {
+                withContext(Dispatchers.IO) { saveSyncService.runtimeSaveIdentityChange(game) }
+            } else null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
         try {
             val snapshot = withContext(Dispatchers.IO) { manager.inspectSaves(game) }
             location = snapshot.location
@@ -166,7 +279,11 @@ private fun SaveManagementScreen(game: ScanGame) {
         }
     }
 
-    LaunchedEffect(game) {
+    suspend fun refresh() {
+        opMutex.withLock { refreshLocked() }
+    }
+
+    LaunchedEffect(game.uri) {
         refresh()
         // 互通开关读取命中 DB：挂起在 IO 线程取生效值
         saveInteropEnabled = EngineLauncher.isRpgSaveInteropEnabled(context, game)
@@ -188,37 +305,49 @@ private fun SaveManagementScreen(game: ScanGame) {
 
     fun runSaveTask(shortFeedback: Boolean = false, block: suspend () -> String?) {
         if (taskRunning) return
-        scope.launch {
-            taskRunning = true
+        taskRunning = true
+        onBusyChange(true)
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
             try {
-                val message = withContext(Dispatchers.IO) {
-                    try {
-                        block()
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (failure: Exception) {
-                        if (failure is SaveSyncException) failure.code.toSaveSyncMessage(context)
-                        else failure.toSaveErrorMessage(context, saveOperationFailedMessage)
+                opMutex.withLock {
+                    val message = withContext(Dispatchers.IO) {
+                        try {
+                            block()
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            if (failure is SaveSyncException) failure.code.toSaveSyncMessage(context)
+                            else failure.toSaveErrorMessage(context, saveOperationFailedMessage)
+                        }
                     }
-                }
-                refresh()
-                if (message != null) {
-                    val duration = if (shortFeedback) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
-                    AppNotice.makeText(context, message, duration, AppNotice.Kind.Info).show()
+                    refreshLocked()
+                    if (message != null) {
+                        val duration = if (shortFeedback) Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+                        AppNotice.makeText(context, message, duration, AppNotice.Kind.Info).show()
+                    }
                 }
             } finally {
                 taskRunning = false
+                onBusyChange(false)
             }
         }
     }
 
-    val exportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/zip"),
-    ) { uri: Uri? ->
-        if (uri != null) {
-            runSaveTask {
-                val count = manager.withManualSaveAccess(game) { manager.exportToZip(game, uri, exportFormat) }
-                saveExportedCountFormat.format(count)
+    fun exportTo(uri: Uri, format: GameSaveManager.ExportFormat) {
+        runSaveTask {
+            if (inBook && !bookSaveExportAllowed()) return@runSaveTask null
+            val count = manager.withManualSaveAccess(game) { manager.exportToZip(game, uri, format) }
+            saveExportedCountFormat.format(count)
+        }
+    }
+
+    val pickExportDestination = onBookExport ?: rememberStandaloneSaveExportLauncher(game, ::exportTo)
+
+    if (bookExportResult != null) {
+        LaunchedEffect(bookExportResult, taskRunning) {
+            val destination = bookExportResult.destination ?: return@LaunchedEffect
+            if (!taskRunning && consumeBookExportResult(bookExportResult)) {
+                exportTo(Uri.parse(destination), bookExportResult.format)
             }
         }
     }
@@ -231,49 +360,33 @@ private fun SaveManagementScreen(game: ScanGame) {
         }
     }
 
-    MiuixSettingsTheme {
-        ProvideEntrance {
-        MiuixScaffold(
-            modifier = Modifier.fillMaxSize().skipEntranceOnDrag(),
-            containerColor = ComposeColor.Transparent,
-            contentWindowInsets = WindowInsets(0.dp),
-            topBar = {
-                AppSecondaryTopBar(
-                    title = stringResource(R.string.save_management_title),
-                    background = ComposeColor.Transparent,
-                    contentColor = PageTextColor,
-                )
-            },
-        ) { innerPadding ->
+    @Composable
+    fun ListBody(listModifier: Modifier, listPadding: PaddingValues) {
             LazyColumn(
-                modifier = Modifier.fillMaxSize()
-                    .padding(horizontal = 12.dp)
-                    .padding(top = innerPadding.calculateTopPadding()),
-                contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = listModifier,
+                contentPadding = listPadding,
+                verticalArrangement = Arrangement.spacedBy(if (inBook) 10.dp else 12.dp),
             ) {
                 item {
-                    Card(
-                        modifier = Modifier.staggeredEntrance(0).fillMaxWidth().glassBorder(),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                        colors = CardDefaults.cardColors(containerColor = NavWhite, contentColor = TextColor),
-                        shape = AppComponentShape,
+                    com.tyranor.next.ui.common.AppSectionCard(
+                        modifier = Modifier.staggeredEntrance(0),
                     ) {
-                        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        Column(Modifier.fillMaxWidth().padding(if (inBook) 4.dp else 16.dp)) {
                             Text(game.title, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             BlurCrossfade(targetState = location) { loadedLocation ->
+                                val noteInk = if (inBook) com.tyranor.next.theme.CurrentBookPaperPalette.inkSecondary else SecondaryTextColor
                                 if (loadedLocation != null) Column {
                                     Text(
                                         loadedLocation.description(game.engine.displayName),
                                         style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        color = noteInk,
                                         modifier = Modifier.padding(top = 8.dp),
                                     )
                                     if (loadedLocation.mirrorForced) {
                                         Text(
                                             stringResource(R.string.krkr_mirror_save_import_hint),
                                             style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            color = noteInk,
                                             modifier = Modifier.padding(top = 4.dp),
                                         )
                                     }
@@ -282,17 +395,48 @@ private fun SaveManagementScreen(game: ScanGame) {
                                         RollingNumberText(
                                             stringResource(R.string.save_file_count, fileCount),
                                             style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            color = noteInk,
                                             modifier = Modifier.padding(top = 4.dp),
                                         )
                                     } else {
                                         Text(
                                             stringResource(R.string.save_unmanageable),
                                             style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            color = noteInk,
                                             modifier = Modifier.padding(top = 4.dp),
                                         )
                                     }
+                                }
+                            }
+                            externalSessionSummary?.let { session ->
+                                Text(
+                                    stringResource(
+                                        R.string.save_external_exit_identity,
+                                        session.modulePackageName?.takeIf { it.isNotBlank() } ?: stringResource(R.string.save_external_exit_identity_unrecorded),
+                                        session.directoryIdentity?.takeIf { it.isNotBlank() } ?: stringResource(R.string.save_external_exit_identity_unrecorded),
+                                    ),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = SecondaryTextColor,
+                                    modifier = Modifier.padding(top = 8.dp),
+                                )
+                            }
+                            runtimeIdentityChange?.let { change ->
+                                Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        stringResource(R.string.save_runtime_identity_changed_message),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.error,
+                                    )
+                                    Text(
+                                        stringResource(R.string.save_runtime_identity_old_directory, change.oldDirectory),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = SecondaryTextColor,
+                                    )
+                                    Text(
+                                        stringResource(R.string.save_runtime_identity_new_directory, change.newDirectory),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = SecondaryTextColor,
+                                    )
                                 }
                             }
                             // 刷新失败提示：原位展开 / 收回，收起过程中保留最后一条文案
@@ -312,18 +456,29 @@ private fun SaveManagementScreen(game: ScanGame) {
                 }
 
                 item {
-                    MiuixCard(
-                        modifier = Modifier.pressSquishGroup().staggeredEntrance(1).fillMaxWidth().glassBorder(),
-                        cornerRadius = AppComponentCornerRadius,
+                    com.tyranor.next.ui.common.AppSectionCard(
+                        modifier = Modifier.pressSquishGroup().staggeredEntrance(1),
                     ) {
                         Column(Modifier.padding(vertical = 4.dp)) {
-                            if (requiresExternalSaveExitConfirmation(game.engine)) {
+                            runtimeIdentityChange?.let { change ->
+                                AppNavItem(
+                                    title = stringResource(R.string.save_runtime_identity_confirm),
+                                    summary = stringResource(R.string.save_runtime_identity_changed_title),
+                                    showLeadingIcon = false,
+                                    showArrow = false,
+                                    drawSurface = false,
+                                    indication = null,
+                                    onClick = if (taskRunning) null else ({ showRuntimeIdentityConfirmation = true }),
+                                )
+                            }
+                            if (requiresExternalSaveExitConfirmation(game.engine) || externalSessionPending) {
                                 AppNavItem(
                                     title = stringResource(R.string.save_external_exit_title),
                                     summary = stringResource(R.string.save_external_exit_summary),
                                     showLeadingIcon = false,
                                     showArrow = false,
                                     drawSurface = false,
+                                    indication = null,
                                     onClick = if (taskRunning) null else ({
                                         runSaveTask {
                                             externalExitConfirmation = SaveSyncRuntime.externalExitConfirmation(context, game)
@@ -337,12 +492,12 @@ private fun SaveManagementScreen(game: ScanGame) {
                                 showLeadingIcon = false,
                                 showArrow = false,
                                 drawSurface = false,
-                                onClick = if (taskRunning) null else ({
+                                indication = null,
+                                onClick = if (taskRunning || !canManageFiles) null else ({
                                     if (rpgWebGame) {
                                         showExportFormatPicker = true
                                     } else {
-                                        exportFormat = GameSaveManager.ExportFormat.TYRANOR
-                                        exportLauncher.launch(defaultArchiveName(game))
+                                        pickExportDestination(GameSaveManager.ExportFormat.TYRANOR)
                                     }
                                 }),
                             )
@@ -352,7 +507,8 @@ private fun SaveManagementScreen(game: ScanGame) {
                                     showLeadingIcon = false,
                                     showArrow = false,
                                     drawSurface = false,
-                                    onClick = if (taskRunning) null else ({
+                                    indication = null,
+                                    onClick = if (taskRunning || !canManageFiles) null else ({
                                         runSaveTask {
                                             when (val op = EngineLauncher.syncRpgSaves(context, game)) {
                                                 is EngineLauncher.RpgSaveOpResult.Done -> formatSyncResult(op.value)
@@ -370,7 +526,8 @@ private fun SaveManagementScreen(game: ScanGame) {
                                 showLeadingIcon = false,
                                 showArrow = false,
                                 drawSurface = false,
-                                onClick = if (taskRunning) null else ({
+                                indication = null,
+                                onClick = if (taskRunning || !canManageFiles) null else ({
                                     importLauncher.launch("application/zip")
                                 }),
                             )
@@ -379,7 +536,8 @@ private fun SaveManagementScreen(game: ScanGame) {
                                 showLeadingIcon = false,
                                 showArrow = false,
                                 drawSurface = false,
-                                onClick = if (taskRunning) null else ({ showDeleteConfirm = true }),
+                                indication = null,
+                                onClick = if (taskRunning || !canManageFiles) null else ({ showDeleteConfirm = true }),
                             )
                             ExpandVisibility(visible = hasImportedResources) {
                                 AppNavItem(
@@ -387,7 +545,8 @@ private fun SaveManagementScreen(game: ScanGame) {
                                     showLeadingIcon = false,
                                     showArrow = false,
                                     drawSurface = false,
-                                    onClick = if (taskRunning || !hasImportedResources) null else ({ showClearImportedResources = true }),
+                                    indication = null,
+                                    onClick = if (taskRunning || !canManageFiles || !hasImportedResources) null else ({ showClearImportedResources = true }),
                                 )
                             }
                         }
@@ -405,9 +564,35 @@ private fun SaveManagementScreen(game: ScanGame) {
                         }
                     }
                 }
-                item(key = "saveBottomInset") { BottomInsetSpacer() }
+                item(key = "saveBottomInset") { if (!inBook) BottomInsetSpacer() }
             }
-        }
+    }
+
+    MiuixSettingsTheme {
+        if (inBook) {
+            ListBody(Modifier.fillMaxSize(), PaddingValues(bottom = 8.dp))
+        } else {
+            ProvideEntrance {
+                MiuixScaffold(
+                    modifier = Modifier.fillMaxSize().skipEntranceOnDrag(),
+                    containerColor = ComposeColor.Transparent,
+                    contentWindowInsets = WindowInsets(0.dp),
+                    topBar = {
+                        AppSecondaryTopBar(
+                            title = stringResource(R.string.save_management_title),
+                            background = ComposeColor.Transparent,
+                            contentColor = PageTextColor,
+                        )
+                    },
+                ) { innerPadding ->
+                    ListBody(
+                        Modifier.fillMaxSize()
+                            .padding(horizontal = 12.dp)
+                            .padding(top = innerPadding.calculateTopPadding()),
+                        PaddingValues(top = 12.dp, bottom = 24.dp),
+                    )
+                }
+            }
         }
     }
 
@@ -438,6 +623,50 @@ private fun SaveManagementScreen(game: ScanGame) {
         )
     }
 
+    if (showRuntimeIdentityConfirmation) {
+        val change = runtimeIdentityChange
+        AppAlertDialog(
+            onDismissRequest = { showRuntimeIdentityConfirmation = false },
+            dismissEnabled = !taskRunning,
+            title = { Text(stringResource(R.string.save_runtime_identity_changed_title), style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.save_runtime_identity_changed_message), style = MaterialTheme.typography.bodyMedium)
+                    change?.let {
+                        Text(stringResource(R.string.save_runtime_identity_old_directory, it.oldDirectory), style = MaterialTheme.typography.bodyMedium)
+                        Text(stringResource(R.string.save_runtime_identity_new_directory, it.newDirectory), style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            },
+            confirmButton = {
+                DialogTextButton(
+                    text = stringResource(R.string.save_runtime_identity_confirm),
+                    enabled = !taskRunning && change != null,
+                    onClick = {
+                        showRuntimeIdentityConfirmation = false
+                        val snapshot = change ?: return@DialogTextButton
+                        runSaveTask {
+                            when (val result = saveSyncService.confirmRuntimeSaveIdentityChange(game, snapshot)) {
+                                RuntimeSaveIdentityChangeResult.Confirmed -> runtimeIdentityConfirmedMessage
+                                RuntimeSaveIdentityChangeResult.Stale,
+                                RuntimeSaveIdentityChangeResult.Unavailable -> runtimeIdentityStaleMessage
+                                RuntimeSaveIdentityChangeResult.GameRunning -> saveBusyEngineRunningMessage
+                                is RuntimeSaveIdentityChangeResult.Failed -> result.error.toSaveSyncMessage(context)
+                            }
+                        }
+                    },
+                )
+            },
+            dismissButton = {
+                DialogTextButton(
+                    text = stringResource(R.string.common_cancel),
+                    enabled = !taskRunning,
+                    onClick = { showRuntimeIdentityConfirmation = false },
+                )
+            },
+        )
+    }
+
     // MV/MZ 导出格式选择：保留原有的格式确认与说明。
     if (showExportFormatPicker) {
         AppAlertDialog(
@@ -451,13 +680,11 @@ private fun SaveManagementScreen(game: ScanGame) {
                         modifier = Modifier.staggeredEntrance(2, distance = 10.dp, stepMillis = 45L),
                         summary = stringResource(R.string.save_export_format_standard_summary),
                         leadingIcon = R.drawable.ic_save_export_format,
-                        containerColor = DialogItemSurface,
                         showArrow = false,
                         indication = null,
                         onClick = {
                             showExportFormatPicker = false
-                            exportFormat = GameSaveManager.ExportFormat.STANDARD
-                            exportLauncher.launch(defaultArchiveName(game))
+                            pickExportDestination(GameSaveManager.ExportFormat.STANDARD)
                         },
                     )
                     AppNavItem(
@@ -465,13 +692,11 @@ private fun SaveManagementScreen(game: ScanGame) {
                         modifier = Modifier.staggeredEntrance(3, distance = 10.dp, stepMillis = 45L),
                         summary = stringResource(R.string.save_export_format_tyranor_summary),
                         leadingIcon = R.drawable.ic_save_export_format,
-                        containerColor = DialogItemSurface,
                         showArrow = false,
                         indication = null,
                         onClick = {
                             showExportFormatPicker = false
-                            exportFormat = GameSaveManager.ExportFormat.TYRANOR
-                            exportLauncher.launch(defaultArchiveName(game))
+                            pickExportDestination(GameSaveManager.ExportFormat.TYRANOR)
                         },
                     )
                 }
@@ -526,6 +751,21 @@ private fun SaveManagementScreen(game: ScanGame) {
                 DialogTextButton(text = stringResource(R.string.common_cancel), onClick = { showDeleteConfirm = false })
             },
         )
+    }
+}
+
+@Composable
+private fun rememberStandaloneSaveExportLauncher(
+    game: ScanGame,
+    onDestination: (Uri, GameSaveManager.ExportFormat) -> Unit,
+): (GameSaveManager.ExportFormat) -> Unit {
+    var exportFormat by rememberSaveable { mutableStateOf(GameSaveManager.ExportFormat.TYRANOR) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) onDestination(uri, exportFormat)
+    }
+    return { format ->
+        exportFormat = format
+        launcher.launch(defaultArchiveName(game))
     }
 }
 

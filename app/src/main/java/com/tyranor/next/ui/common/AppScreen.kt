@@ -1,28 +1,38 @@
 package com.tyranor.next.ui.common
 
 import android.graphics.Color
+import android.content.Intent
 import android.content.res.Configuration
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import androidx.activity.OnBackPressedCallback
 import androidx.compose.animation.core.tween
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.fragment.app.FragmentActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import kotlinx.coroutines.delay
+import com.tyranor.next.core.privacy.AppLockController
+import com.tyranor.next.ui.common.collectSettingAsState
+import com.tyranor.next.ui.common.motion.skipDrawWhenHidden
 import com.tyranor.next.core.settings.AppSettingsStore
 import com.tyranor.next.theme.AppThemeColors
 import com.tyranor.next.theme.GlassBackground
@@ -32,6 +42,7 @@ import com.tyranor.next.ui.common.motion.PageTransitions
 import com.tyranor.next.ui.common.motion.PushStartLead
 import com.tyranor.next.ui.common.motion.MotionMode
 import com.tyranor.next.ui.common.motion.ProvideMotionEnvironment
+import com.tyranor.next.ui.common.motion.ScreenRotationSync
 import com.tyranor.next.ui.common.motion.SystemThemeSync
 import com.tyranor.next.ui.common.motion.EntranceGate
 import com.tyranor.next.ui.common.motion.LocalEntranceGate
@@ -43,15 +54,22 @@ import com.tyranor.next.ui.common.motion.rememberSheetBackdrop
 import com.tyranor.next.ui.common.motion.MotionSprings
 import com.tyranor.next.ui.common.motion.pageTransitionScrim
 import com.tyranor.next.ui.common.motion.rememberPageDepth
+import com.tyranor.next.ui.common.privacy.FlagSecureEffect
+import com.tyranor.next.ui.common.privacy.PrivacyLockGate
+import com.tyranor.next.ui.common.privacy.blockAppInteractionKeys
 
 /**
  * 二级页面统一宿主（P1-4）：收敛各 Activity 重复的
  * 「isDarkEffective → enableEdgeToEdge → 透明系统栏 → 主题包裹 → finish 转场」样板。
  *
+ * 基类为 [FragmentActivity]（[ComponentActivity] 的子类）：应用锁的 BiometricPrompt
+ * （core/privacy + ui/common/privacy）要求宿主 Activity 提供 FragmentManager，
+ * 所有二级页与 [com.tyranor.next.MainActivity] 统一满足。
+ *
  * 用法：Activity 继承 [AppScreenActivity]，在 `onCreate` 中校验入参后调用
  * [setAppScreenContent] 提供正文；页面自身需要的 Miuix 子主题照常在正文内声明。
  */
-abstract class AppScreenActivity : ComponentActivity() {
+abstract class AppScreenActivity : FragmentActivity() {
 
     private var systemBarsDark: Boolean? = null
     private var closeTransitionMode: Boolean? = null
@@ -63,6 +81,84 @@ abstract class AppScreenActivity : ComponentActivity() {
         }
     }
 
+    // ---- 从多任务 / 桌面切回后「立刻返回」：把返回放行到启动器的拉起动画结束之后 ----
+    //
+    // 根因（真机 logcat 实测）：从最近任务点回本应用时，系统用桌面的「远程转场」播放拉起动画（约 0.63s）；
+    // 这期间本页 finish() 产生的 CLOSE 转场会被系统**合并进**这个还没结束的远程转场（`Transition was merged: (#CLOSE) into (#TO_FRONT)`），
+    // 合并掉的转场没有任何动画——于是二级页一帧就消失，露出一级页。动画本身没写错，是返回发生得太早。
+    // 所以回到前台后、拉起动画结束之前，系统返回先记下来，等 onEnterAnimationComplete（拉起动画真正结束，实测比远程转场结束晚约 3ms）
+    // 再放行，之后系统照常播放返回动画；不依赖具体机型 / 系统的动画时长。信号万一没来，HotStartGuardTimeoutMillis 兜底放行。
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var resumeCount = 0
+    private var childLaunched = false
+    private var deferredBackPending = false
+
+    private val hotStartBackGuard = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            deferredBackPending = true
+        }
+    }
+
+    private val hotStartGuardTimeout = Runnable { releaseHotStartBackGuard() }
+
+    /** 拉起动画结束（或兜底超时）：停止拦截，并把期间记下的那次返回交还给系统。 */
+    private fun releaseHotStartBackGuard() {
+        mainHandler.removeCallbacks(hotStartGuardTimeout)
+        hotStartBackGuard.isEnabled = false
+        if (deferredBackPending) {
+            deferredBackPending = false
+            onBackPressedDispatcher.onBackPressed()
+        }
+    }
+
+    private fun cancelHotStartBackGuard() {
+        mainHandler.removeCallbacks(hotStartGuardTimeout)
+        hotStartBackGuard.isEnabled = false
+        deferredBackPending = false
+    }
+
+    /** 本页自己拉起了别的页面：之后的 onResume 是下层页面的正常返回（普通 CLOSE 转场），不是桌面拉起，不用等。 */
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun startActivityForResult(intent: Intent, requestCode: Int, options: Bundle?) {
+        childLaunched = true
+        try {
+            super.startActivityForResult(intent, requestCode, options)
+        } catch (failure: RuntimeException) {
+            // 没有真的拉起子页（如 ActivityNotFoundException）：别让旗标残留，免得下一次真正的热启动漏掉返回拦截
+            childLaunched = false
+            throw failure
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 首次 onResume 是本页自己的进场；之后没有拉起过子页就恢复前台的，只会是从多任务 / 桌面 / 别的应用切回
+        val resumedFromOutside = resumeCount > 0 && !childLaunched
+        resumeCount++
+        childLaunched = false
+        cancelHotStartBackGuard()
+        if (resumedFromOutside && MotionMode.enhanced) {
+            hotStartBackGuard.isEnabled = true
+            mainHandler.postDelayed(hotStartGuardTimeout, HotStartGuardTimeoutMillis)
+        }
+    }
+
+    override fun onEnterAnimationComplete() {
+        super.onEnterAnimationComplete()
+        releaseHotStartBackGuard()
+    }
+
+    override fun onPause() {
+        // 又离开了前台：之前记下的返回已经没有意义
+        cancelHotStartBackGuard()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        cancelHotStartBackGuard()
+        super.onDestroy()
+    }
+
     private fun syncSystemBarStyle(dark: Boolean) {
         if (systemBarsDark == dark) return
         applySystemBarStyle(dark)
@@ -71,6 +167,9 @@ abstract class AppScreenActivity : ComponentActivity() {
 
     /** 系统深浅色变化时的自动换皮过渡（页面原地接收 uiMode 变化，不再被销毁重建）。 */
     private lateinit var systemThemeSync: SystemThemeSync
+
+    /** 平板横竖屏切换的转动过渡：页面自己处理方向变化（不重建），旋转的那一刻截下旧画面。 */
+    private lateinit var screenRotationSync: ScreenRotationSync
 
     /**
      * 本页自己进出的入场翻折进度（见 [PageEnter]）：进场由 [AppScreenScaffold] 在第一帧启动，退出在 [finish] 里倒放。
@@ -82,6 +181,7 @@ abstract class AppScreenActivity : ComponentActivity() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         // 先保持旧主题并截下旧画面，再让 Compose 接收新配置
         systemThemeSync.onConfigurationChanged(newConfig)
+        screenRotationSync.onConfigurationChanged(newConfig)
         super.onConfigurationChanged(newConfig)
     }
 
@@ -89,11 +189,12 @@ abstract class AppScreenActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         systemThemeSync = SystemThemeSync(this)
+        screenRotationSync = ScreenRotationSync(this)
         // 子类可能因参数无效而在 setContent 前 finish；返回动画同样必须使用持久化档位。
-        AppSettingsStore.initMotionEnhanced(this)
-        MotionMode.sync(AppSettingsStore.motionEnhancedState.value)
         syncCloseTransition(MotionMode.enhanced)
         PageTransitions.bindPushOwner(this)
+        // 先于子类添加：子类里后加的返回处理（弹窗、未保存确认等）优先级更高，不受影响
+        onBackPressedDispatcher.addCallback(this, hotStartBackGuard)
         // 「普通」档不播入场翻折（入场的协程直接返回），进度若还是 0，之后在本页里把「界面动效」切到「增强」时，
         // 翻折会按「还没进来」画出来：页面永远停在最大倾角（14°）并褪色（用户录屏复现过）。
         // 所以普通档创建的页面也从「已就位」开始；系统重建 / 恢复同理。必须在同步档位之后创建
@@ -109,6 +210,8 @@ abstract class AppScreenActivity : ComponentActivity() {
     /** 统一主题包裹并提供页面正文。 */
     protected fun setAppScreenContent(content: @Composable () -> Unit) {
         setContent {
+            // 防止截图 / 应用锁生效期间强制 FLAG_SECURE（窗口级，挂在页面正文之外）
+            FlagSecureEffect(this)
             // 应用设置可在本页切档；系统选择返回动画之前就要更新，而不是等手势提交。
             val enhanced = MotionMode.enhanced
             DisposableEffect(enhanced) {
@@ -145,6 +248,12 @@ abstract class AppScreenActivity : ComponentActivity() {
         PageTransitions.applyPop(this)
     }
 }
+
+/**
+ * 从桌面 / 多任务切回后，拦截返回的兜底时限：正常由 `onEnterAnimationComplete` 放行（实测约 0.63s 后触发），
+ * 只有该信号没来（例如系统没有播放拉起动画）时才靠它，避免返回被一直压住。
+ */
+private const val HotStartGuardTimeoutMillis = 1200L
 
 /** 系统「过渡动画缩放」（开发者选项）：0 = 关闭动画；上限 10。 */
 private fun transitionAnimationScale(context: android.content.Context): Float =
@@ -240,10 +349,29 @@ fun AppScreenScaffold(
                 val pageLayers = remember(enhanced, overlayBackdrop, depth, pageEnter) {
                     Modifier.depthFoldStack(overlay = overlayBackdrop, panel = null, push = depth, enter = pageEnter)
                 }
-                PageTransitionBackground(depth, modifier) {
+                // 应用锁生效时**整块页面（根背景 + 内容）**都不参与绘制：锁门自带同样的完整背景，
+                // 下层继续画只会让粒子 / 自定义背景图各多一份（30fps 重绘白白消耗）。
+                // 跳过挂在 PageTransitionBackground 外层，连同它在 skipDrawWhenHidden 之外的
+                // 背景 / 粒子层一起跳过（内层不再重复挂）。
+                val locked by AppLockController.lockedState.collectSettingAsState()
+                PageTransitionBackground(
+                    depth = depth,
+                    modifier = modifier.skipDrawWhenHidden { !locked },
+                ) {
                     WithoutPressIndication {
                         // 翻折只作用在内容上：页面根背景不动
-                        Box(Modifier.fillMaxSize().then(pageLayers)) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .then(pageLayers)
+                                // 锁定时页面内容退出无障碍树：TalkBack 不能聚焦或激活门下节点
+                                // （门自身语义保留，见 PrivacyLockGate）
+                                .then(if (locked) Modifier.clearAndSetSemantics { } else Modifier)
+                                // 外接键盘 / 手柄：无障碍屏蔽只挡语义，已聚焦的按钮仍能被 Enter 激活。
+                                // 锁定时拦下会操作页面的按键（Back 放行给锁门退到后台，
+                                // 音量 / 媒体等系统键放行）
+                                .then(Modifier.blockAppInteractionKeys(locked)),
+                        ) {
                             CompositionLocalProvider(
                                 LocalEntranceGate provides entranceGate,
                                 LocalSheetBackdrop provides overlayBackdrop,
@@ -253,6 +381,9 @@ fun AppScreenScaffold(
                         }
                     }
                 }
+                // 应用锁解锁门：进程内覆盖层（性质同弹窗，不设顶栏），盖在页面内容
+                // （含翻折图层与抽屉遮罩）之上；未上锁时不组合任何内容
+                PrivacyLockGate()
             }
         }
     }
